@@ -1,0 +1,9 @@
+{
+  "name": "travelmind",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend/api"
+  ]
+}
+
