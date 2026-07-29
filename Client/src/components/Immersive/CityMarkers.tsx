@@ -3,7 +3,10 @@ import { Html } from '@react-three/drei'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { FeaturedCity } from './featuredCities'
-import { latLngToVector3 } from './geo'
+import { GLOBE_RADIUS, latLngToVector3 } from './geo'
+
+const MARKER_RADIUS = GLOBE_RADIUS * 1.015
+const _scaleTarget = new THREE.Vector3()
 
 type CityMarkersProps = {
   cities: FeaturedCity[]
@@ -21,15 +24,13 @@ function CityMarker({
   onSelect: () => void
 }) {
   const meshRef = useRef<THREE.Mesh>(null)
-  const position = latLngToVector3(city.lat, city.lng, 1.22)
+  const position = latLngToVector3(city.lat, city.lng, MARKER_RADIUS)
 
   useFrame((_, delta) => {
     if (!meshRef.current) return
     const targetScale = selected ? 1.6 : 1
-    meshRef.current.scale.lerp(
-      new THREE.Vector3(targetScale, targetScale, targetScale),
-      Math.min(1, delta * 8)
-    )
+    _scaleTarget.set(targetScale, targetScale, targetScale)
+    meshRef.current.scale.lerp(_scaleTarget, Math.min(1, delta * 8))
   })
 
   return (
