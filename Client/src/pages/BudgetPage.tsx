@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { ArrowLeft, PieChart as PieIcon, Wallet } from 'lucide-react'
+import {
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+} from 'recharts'
 import {
   tripsApi,
   type BudgetCategory,
@@ -8,6 +17,11 @@ import {
   type TripBudget,
   type UpdateBudgetLinePayload,
 } from '../lib/tripsApi'
+import { TripToolNav } from '../components/trips/TripToolNav'
+import { Button } from '../components/ui/Button'
+import { EmptyState } from '../components/ui/EmptyState'
+import { Skeleton } from '../components/ui/Skeleton'
+import { useToast } from '../components/ui/Toast'
 
 const CATEGORIES: BudgetCategory[] = [
   'lodging',
@@ -15,6 +29,14 @@ const CATEGORIES: BudgetCategory[] = [
   'transport',
   'activities',
   'other',
+]
+
+const CHART_COLORS = [
+  'hsl(191 74% 28%)',
+  'hsl(38 51% 62%)',
+  'hsl(200 25% 35%)',
+  'hsl(152 45% 38%)',
+  'hsl(200 12% 55%)',
 ]
 
 const inputClass =
@@ -36,10 +58,9 @@ function categoryLabel(category: string) {
 
 export default function BudgetPage() {
   const { tripId } = useParams<{ tripId: string }>()
+  const { toast } = useToast()
   const [budget, setBudget] = useState<TripBudget | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
   const [category, setCategory] = useState<BudgetCategory>('food')
@@ -55,18 +76,21 @@ export default function BudgetPage() {
 
   const loadBudget = useCallback(async () => {
     if (!tripId) return
-    setError('')
     setLoading(true)
     try {
       const data = await tripsApi.getBudget(tripId)
       setBudget(data)
     } catch (err) {
       setBudget(null)
-      setError(err instanceof Error ? err.message : 'Failed to load budget')
+      toast({
+        title: 'Could not load budget',
+        description: err instanceof Error ? err.message : 'Request failed',
+        variant: 'danger',
+      })
     } finally {
       setLoading(false)
     }
-  }, [tripId])
+  }, [tripId, toast])
 
   useEffect(() => {
     void loadBudget()
@@ -74,12 +98,14 @@ export default function BudgetPage() {
 
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
-    setError('')
-    setMessage('')
     try {
       await fn()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Request failed')
+      toast({
+        title: 'Request failed',
+        description: err instanceof Error ? err.message : 'Try again',
+        variant: 'danger',
+      })
     } finally {
       setBusy(false)
     }
@@ -99,7 +125,7 @@ export default function BudgetPage() {
       setLabel('')
       setAmount('')
       setLinkedActivityId('')
-      setMessage('Budget line added.')
+      toast({ title: 'Budget line added', variant: 'success' })
       await loadBudget()
     })
   }
@@ -127,7 +153,7 @@ export default function BudgetPage() {
       }
       await tripsApi.updateBudgetLine(tripId, lineId, payload)
       setEditingId(null)
-      setMessage('Budget line updated.')
+      toast({ title: 'Budget line updated', variant: 'success' })
       await loadBudget()
     })
   }
@@ -138,7 +164,7 @@ export default function BudgetPage() {
     await withBusy(async () => {
       await tripsApi.removeBudgetLine(tripId, lineId)
       if (editingId === lineId) setEditingId(null)
-      setMessage('Budget line deleted.')
+      toast({ title: 'Budget line deleted', variant: 'success' })
       await loadBudget()
     })
   }
@@ -152,27 +178,43 @@ export default function BudgetPage() {
         amount: Number(cost),
         linkedActivityId: activityId,
       })
-      setMessage(`Added “${name}” to budget.`)
+      toast({ title: `Added “${name}” to budget`, variant: 'success' })
       await loadBudget()
     })
   }
 
+  const chartData = useMemo(() => {
+    if (!budget) return []
+    return CATEGORIES.map((cat) => ({
+      name: categoryLabel(cat),
+      value: Number(budget.totalsByCategory[cat] ?? 0),
+    })).filter((d) => d.value > 0)
+  }, [budget])
+
   if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
+      <div className="mx-auto max-w-4xl space-y-6 py-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-10 w-full max-w-md" />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Skeleton className="h-56 rounded-lg" />
+          <Skeleton className="h-56 rounded-lg" />
+        </div>
       </div>
     )
   }
 
-  if (!budget) {
+  if (!budget || !tripId) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 py-4">
         <Link to="/planner" className="text-sm text-muted-fg underline-offset-2 hover:underline">
-          ← Back to planner
+          ← Back to trips
         </Link>
-        <h1 className="font-display text-2xl font-semibold">Budget manager</h1>
-        <p className="text-muted-fg">{error || 'Trip not found.'}</p>
+        <EmptyState
+          icon={<Wallet className="h-8 w-8" />}
+          title="Budget unavailable"
+          description="Trip not found or budget could not be loaded."
+        />
       </div>
     )
   }
@@ -187,110 +229,124 @@ export default function BudgetPage() {
       : 0
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 py-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Link
-            to="/planner"
-            className="text-sm text-muted-fg underline-offset-2 hover:underline"
-          >
-            ← Back to planner
-          </Link>
-          <h1 className="mt-2 font-display text-2xl font-semibold">{budget.title}</h1>
-          <p className="mt-1 text-sm text-muted-fg">
-            Budget · {formatMoney(budget.totalBudget, budget.currency)}
-          </p>
-          <p className="mt-1 text-sm text-muted-fg">
-            Track spending by category and roll up planned activity costs.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            to={`/planner/${budget.tripId}/itinerary`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-          >
-            Itinerary
-          </Link>
-          <Link
-            to={`/planner/${budget.tripId}/hotels`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-          >
-            Hotels
-          </Link>
+    <div className="mx-auto max-w-4xl space-y-6 py-4">
+      <div className="space-y-3">
+        <Link
+          to={`/planner/${budget.tripId}`}
+          className="inline-flex items-center gap-1.5 text-sm text-muted-fg hover:text-fg"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+          Trip overview
+        </Link>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-semibold">{budget.title}</h1>
+            <p className="mt-1 text-sm text-muted-fg">
+              Budget · {formatMoney(budget.totalBudget, budget.currency)}
+            </p>
+          </div>
           {busy && <span className="self-center text-xs text-muted-fg">Saving…</span>}
         </div>
+        <TripToolNav tripId={budget.tripId} />
       </div>
 
-      {error && <p className="text-sm text-danger">{error}</p>}
-      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
-
-      <section className="space-y-3 border border-border px-4 py-4">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">Overview</h2>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div>
-            <div className={labelText}>Allocated</div>
-            <div className="mt-1 text-lg font-medium">
-              {formatMoney(budget.allocated, budget.currency)}
+      <section className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4 rounded-lg border border-border bg-surface p-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
+            Overview
+          </h2>
+          {Number(budget.allocated) === 0 && (
+            <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-sm text-muted-fg">
+              {formatMoney(budget.totalBudget, budget.currency)} is your trip ceiling from create —
+              nothing spent yet. Add lines below, or pull lodging from Hotels and costs from
+              Itinerary.
+            </p>
+          )}
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+            <div>
+              <div className={labelText}>Allocated</div>
+              <div className="mt-1 text-lg font-medium">
+                {formatMoney(budget.allocated, budget.currency)}
+              </div>
+            </div>
+            <div>
+              <div className={labelText}>Remaining</div>
+              <div
+                className={`mt-1 text-lg font-medium ${
+                  remainingNum < 0 ? 'text-danger' : ''
+                }`}
+              >
+                {formatMoney(budget.remaining, budget.currency)}
+              </div>
+            </div>
+            <div>
+              <div className={labelText}>From activities</div>
+              <div className="mt-1 text-lg font-medium">
+                {formatMoney(budget.plannedFromActivities, budget.currency)}
+              </div>
             </div>
           </div>
-          <div>
-            <div className={labelText}>Remaining</div>
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
             <div
-              className={`mt-1 text-lg font-medium ${
-                remainingNum < 0 ? 'text-danger' : ''
+              className={`h-full rounded-full transition-all ${
+                remainingNum < 0 ? 'bg-danger' : 'bg-brand'
               }`}
-            >
-              {formatMoney(budget.remaining, budget.currency)}
-            </div>
-          </div>
-          <div>
-            <div className={labelText}>From activities</div>
-            <div className="mt-1 text-lg font-medium">
-              {formatMoney(budget.plannedFromActivities, budget.currency)}
-            </div>
+              style={{ width: `${totalAllocatedPct}%` }}
+            />
           </div>
         </div>
-        <div className="h-2 overflow-hidden rounded bg-fg/10">
-          <div
-            className={`h-full transition-all ${
-              remainingNum < 0 ? 'bg-danger' : 'bg-fg/60'
-            }`}
-            style={{ width: `${totalAllocatedPct}%` }}
-          />
-        </div>
-      </section>
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
-          By category
-        </h2>
-        <ul className="space-y-2">
-          {CATEGORIES.map((cat) => {
-            const value = budget.totalsByCategory[cat] ?? '0.00'
-            const pct =
-              Number(budget.totalBudget) > 0
-                ? Math.min(100, (Number(value) / Number(budget.totalBudget)) * 100)
-                : 0
-            return (
-              <li key={cat}>
-                <div className="mb-1 flex justify-between text-sm">
-                  <span className="capitalize text-muted-fg">{categoryLabel(cat)}</span>
-                  <span className="text-muted-fg">{formatMoney(value, budget.currency)}</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded bg-fg/10">
-                  <div className="h-full bg-fg/40" style={{ width: `${pct}%` }} />
-                </div>
-              </li>
-            )
-          })}
-        </ul>
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-fg">
+            By category
+          </h2>
+          {chartData.length === 0 ? (
+            <EmptyState
+              icon={<PieIcon className="h-7 w-7" />}
+              title="No spend yet"
+              description="Add budget lines to see the category chart."
+              className="border-0 bg-transparent py-8"
+            />
+          ) : (
+            <div className="h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={chartData}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius={55}
+                    outerRadius={80}
+                    paddingAngle={2}
+                  >
+                    {chartData.map((_, index) => (
+                      <Cell
+                        key={chartData[index].name}
+                        fill={CHART_COLORS[index % CHART_COLORS.length]}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value: number) =>
+                      formatMoney(value, budget.currency)
+                    }
+                  />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
       </section>
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
           Add budget line
         </h2>
-        <form onSubmit={handleCreate} className="grid gap-3 sm:grid-cols-2">
+        <form
+          onSubmit={handleCreate}
+          className="grid gap-3 rounded-lg border border-border bg-muted/40 p-4 sm:grid-cols-2"
+        >
           <label className="flex flex-col gap-1">
             <span className={labelText}>Category</span>
             <select
@@ -347,13 +403,9 @@ export default function BudgetPage() {
             </label>
           )}
           <div className="sm:col-span-2">
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-fg transition hover:opacity-90 disabled:opacity-50"
-            >
+            <Button type="submit" disabled={busy} size="sm">
               Add line
-            </button>
+            </Button>
           </div>
         </form>
       </section>
@@ -363,11 +415,12 @@ export default function BudgetPage() {
           Budget lines
         </h2>
         {budget.lines.length === 0 ? (
-          <p className="border border-dashed border-border px-4 py-8 text-center text-sm text-muted-fg">
-            No budget lines yet. Add one above or pull costs from activities.
-          </p>
+          <EmptyState
+            title="No budget lines yet"
+            description="Add one above or pull costs from activities."
+          />
         ) : (
-          <ul className="divide-y divide-border border border-border">
+          <ul className="divide-y divide-border rounded-lg border border-border bg-surface">
             {budget.lines.map((line) => (
               <li key={line.id} className="px-4 py-3">
                 {editingId === line.id ? (
@@ -412,21 +465,20 @@ export default function BudgetPage() {
                       </select>
                     )}
                     <div className="flex gap-2 sm:col-span-2">
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
                         disabled={busy}
                         onClick={() => handleUpdate(line.id)}
-                        className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
                       >
                         Save
-                      </button>
-                      <button
-                        type="button"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
                         onClick={() => setEditingId(null)}
-                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg"
                       >
                         Cancel
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : (
@@ -446,20 +498,17 @@ export default function BudgetPage() {
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-                        onClick={() => startEdit(line)}
-                      >
+                      <Button size="sm" variant="secondary" onClick={() => startEdit(line)}>
                         Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-danger/50 hover:text-danger"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-danger"
                         onClick={() => handleDelete(line.id)}
                       >
                         Delete
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -478,7 +527,7 @@ export default function BudgetPage() {
             No priced activities yet. Add costs in the itinerary to roll them up here.
           </p>
         ) : (
-          <ul className="divide-y divide-border border border-border">
+          <ul className="divide-y divide-border rounded-lg border border-border bg-surface">
             {budget.activityCosts.map((activity) => {
               const alreadyLinked = linkedIds.has(activity.id)
               return (
@@ -498,16 +547,16 @@ export default function BudgetPage() {
                   {alreadyLinked ? (
                     <span className="text-xs text-muted-fg">In budget</span>
                   ) : (
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
+                      variant="secondary"
                       disabled={busy}
                       onClick={() =>
                         addFromActivity(activity.id, activity.name, activity.cost)
                       }
-                      className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40 disabled:opacity-50"
                     >
                       Add to budget
-                    </button>
+                    </Button>
                   )}
                 </li>
               )

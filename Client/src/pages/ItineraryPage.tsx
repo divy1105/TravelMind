@@ -17,6 +17,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { ArrowLeft, GripVertical, ListOrdered, Sparkles } from 'lucide-react'
 import {
   tripsApi,
   type Activity,
@@ -25,6 +26,11 @@ import {
   type Trip,
   type UpdateActivityPayload,
 } from '../lib/tripsApi'
+import { TripToolNav } from '../components/trips/TripToolNav'
+import { Button } from '../components/ui/Button'
+import { EmptyState } from '../components/ui/EmptyState'
+import { Skeleton } from '../components/ui/Skeleton'
+import { useToast } from '../components/ui/Toast'
 
 const CATEGORIES = [
   'sightseeing',
@@ -57,8 +63,8 @@ function formatDate(iso: string) {
   }
 }
 
-function sortedStops(stops: Stop[]) {
-  return [...stops].sort((a, b) => a.order - b.order)
+function sortedStops(stops: Stop[] | undefined) {
+  return [...(stops ?? [])].sort((a, b) => a.order - b.order)
 }
 
 function sortedActivities(activities: Activity[] | undefined) {
@@ -67,10 +73,9 @@ function sortedActivities(activities: Activity[] | undefined) {
 
 export default function ItineraryPage() {
   const { tripId } = useParams<{ tripId: string }>()
+  const { toast } = useToast()
   const [trip, setTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
   const sensors = useSensors(
@@ -80,31 +85,36 @@ export default function ItineraryPage() {
 
   const loadTrip = useCallback(async () => {
     if (!tripId) return
-    setError('')
     try {
       const { trip: next } = await tripsApi.get(tripId)
-      setTrip(next)
+      setTrip({ ...next, stops: next.stops ?? [] })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load trip')
       setTrip(null)
+      toast({
+        title: 'Could not load itinerary',
+        description: err instanceof Error ? err.message : 'Request failed',
+        variant: 'danger',
+      })
     } finally {
       setLoading(false)
     }
-  }, [tripId])
+  }, [tripId, toast])
 
   useEffect(() => {
     if (!tripId) return
-    loadTrip()
+    void loadTrip()
   }, [tripId, loadTrip])
 
   async function run<T>(fn: () => Promise<T>): Promise<T | null> {
-    setError('')
     setBusy(true)
-    setMessage('')
     try {
       return await fn()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Request failed')
+      toast({
+        title: 'Request failed',
+        description: err instanceof Error ? err.message : 'Try again',
+        variant: 'danger',
+      })
       return null
     } finally {
       setBusy(false)
@@ -131,13 +141,13 @@ export default function ItineraryPage() {
         reordered.map((s) => ({ id: s.id, order: s.order })),
       ),
     )
-    if (result) setTrip(result.trip)
+    if (result) setTrip({ ...result.trip, stops: result.trip.stops ?? [] })
     else await loadTrip()
   }
 
   async function handleReorderActivities(stopId: string, activeId: string, overId: string) {
     if (!trip || activeId === overId) return
-    const stop = trip.stops.find((s) => s.id === stopId)
+    const stop = (trip.stops ?? []).find((s) => s.id === stopId)
     if (!stop) return
 
     const activities = sortedActivities(stop.activities)
@@ -151,7 +161,9 @@ export default function ItineraryPage() {
     }))
     setTrip({
       ...trip,
-      stops: trip.stops.map((s) => (s.id === stopId ? { ...s, activities: reordered } : s)),
+      stops: (trip.stops ?? []).map((s) =>
+        s.id === stopId ? { ...s, activities: reordered } : s,
+      ),
     })
 
     const result = await run(() =>
@@ -161,7 +173,7 @@ export default function ItineraryPage() {
         reordered.map((a) => ({ id: a.id, order: a.order })),
       ),
     )
-    if (result) setTrip(result.trip)
+    if (result) setTrip({ ...result.trip, stops: result.trip.stops ?? [] })
     else await loadTrip()
   }
 
@@ -173,7 +185,7 @@ export default function ItineraryPage() {
 
   async function handleAddStop(city: string, country: string) {
     if (!trip || !city.trim()) return
-    const result = await run((token) =>
+    const result = await run(() =>
       tripsApi.addStop(trip.id, {
         city: city.trim(),
         country: country.trim() || undefined,
@@ -182,11 +194,16 @@ export default function ItineraryPage() {
     if (!result) return
     setTrip({
       ...trip,
-      stops: [...trip.stops, { ...result.stop, activities: [] }].sort(
-        (a, b) => a.order - b.order,
-      ),
+      stops: [
+        ...(trip.stops ?? []),
+        {
+          ...result.stop,
+          activities: result.stop.activities ?? [],
+          hotels: result.stop.hotels ?? [],
+        },
+      ].sort((a, b) => a.order - b.order),
     })
-    setMessage('Stop added.')
+    toast({ title: 'Stop added', variant: 'success' })
   }
 
   async function handleRemoveStop(stopId: string) {
@@ -195,14 +212,12 @@ export default function ItineraryPage() {
     const ok = await run(() => tripsApi.removeStop(trip.id, stopId))
     if (!ok) return
     setTrip({ ...trip, stops: trip.stops.filter((s) => s.id !== stopId) })
-    setMessage('Stop removed.')
+    toast({ title: 'Stop removed', variant: 'success' })
   }
 
   async function handleAddActivity(stopId: string, payload: CreateActivityPayload) {
     if (!trip) return
-    const result = await run((token) =>
-      tripsApi.addActivity(trip.id, stopId, payload),
-    )
+    const result = await run(() => tripsApi.addActivity(trip.id, stopId, payload))
     if (!result) return
     setTrip({
       ...trip,
@@ -215,14 +230,12 @@ export default function ItineraryPage() {
           : s,
       ),
     })
-    setMessage('Activity added.')
+    toast({ title: 'Activity added', variant: 'success' })
   }
 
   async function handleUpdateActivity(activityId: string, payload: UpdateActivityPayload) {
     if (!trip) return
-    const result = await run((token) =>
-      tripsApi.updateActivity(trip.id, activityId, payload),
-    )
+    const result = await run(() => tripsApi.updateActivity(trip.id, activityId, payload))
     if (!result) return
     setTrip({
       ...trip,
@@ -246,80 +259,99 @@ export default function ItineraryPage() {
         activities: (s.activities ?? []).filter((a) => a.id !== activityId),
       })),
     })
-    setMessage('Activity removed.')
+    toast({ title: 'Activity removed', variant: 'success' })
   }
 
   if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
+      <div className="mx-auto max-w-4xl space-y-6 py-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-10 w-full max-w-md" />
+        <Skeleton className="h-40 rounded-lg" />
+        <Skeleton className="h-40 rounded-lg" />
       </div>
     )
   }
 
-  if (!trip) {
+  if (!trip || !tripId) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 py-4">
         <Link to="/planner" className="text-sm text-muted-fg underline-offset-2 hover:underline">
-          ← Back to planner
+          ← Back to trips
         </Link>
-        <h1 className="font-display text-2xl font-semibold">Itinerary builder</h1>
-        <p className="text-muted-fg">{error || 'Trip not found.'}</p>
+        <EmptyState
+          icon={<ListOrdered className="h-8 w-8" />}
+          title="Itinerary unavailable"
+          description="Trip not found or could not be loaded."
+        />
       </div>
     )
   }
 
-  const stops = sortedStops(trip.stops)
+  const stops = sortedStops(trip.stops ?? [])
+  const activityCount = stops.reduce((n, s) => n + (s.activities?.length ?? 0), 0)
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 py-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Link
-            to="/planner"
-            className="text-sm text-muted-fg underline-offset-2 hover:underline"
-          >
-            ← Back to planner
-          </Link>
-          <h1 className="mt-2 font-display text-2xl font-semibold">{trip.title}</h1>
-          <p className="mt-1 text-sm text-muted-fg">
-            {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
-            {' · '}
-            {trip.totalBudget} {trip.currency}
-            {' · '}
-            <span className="capitalize">{trip.status}</span>
-          </p>
-          <p className="mt-1 text-sm text-muted-fg">
-            Drag stops or activities to reorder. Add and edit details city by city.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            to={`/planner/${trip.id}/hotels`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-          >
-            Hotels
-          </Link>
-          <Link
-            to={`/planner/${trip.id}/budget`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-          >
-            Budget
-          </Link>
+    <div className="mx-auto max-w-4xl space-y-6 py-4">
+      <div className="space-y-3">
+        <Link
+          to={`/planner/${trip.id}`}
+          className="inline-flex items-center gap-1.5 text-sm text-muted-fg hover:text-fg"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+          Trip overview
+        </Link>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-semibold">{trip.title}</h1>
+            <p className="mt-1 text-sm text-muted-fg">
+              {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
+              {' · '}
+              {trip.totalBudget} {trip.currency}
+              {' · '}
+              <span className="capitalize">{trip.status}</span>
+            </p>
+            <p className="mt-1 text-sm text-muted-fg">
+              Drag stops or activities to reorder. Add and edit details city by city.
+            </p>
+          </div>
           {busy && <span className="self-center text-xs text-muted-fg">Saving…</span>}
         </div>
+        <TripToolNav tripId={trip.id} />
       </div>
 
-      {error && <p className="text-sm text-danger">{error}</p>}
-      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
+      {stops.length > 0 && activityCount === 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
+          <p className="text-muted-fg">
+            Stops are ready — add activities here, or generate a full draft with AI.
+          </p>
+          <Link
+            to={`/planner/${trip.id}`}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-brand px-3 text-xs font-medium text-brand-fg hover:opacity-90"
+          >
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
+            Generate with AI
+          </Link>
+        </div>
+      )}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onStopDragEnd}>
         <SortableContext items={stops.map((s) => s.id)} strategy={verticalListSortingStrategy}>
           <div className="space-y-4">
             {stops.length === 0 ? (
-              <p className="border border-dashed border-border px-4 py-8 text-center text-sm text-muted-fg">
-                No stops yet. Add a city below to start building.
-              </p>
+              <EmptyState
+                icon={<ListOrdered className="h-8 w-8" />}
+                title="No stops yet"
+                description="Activities attach to city stops. Add your first city below, then build the day-by-day plan or generate with AI from the overview."
+                action={
+                  <a
+                    href="#add-stop"
+                    className="inline-flex h-8 items-center rounded-md bg-brand px-3 text-xs font-medium text-brand-fg hover:opacity-90"
+                  >
+                    Add first stop
+                  </a>
+                }
+              />
             ) : (
               stops.map((stop, idx) => (
                 <SortableStopCard
@@ -341,7 +373,9 @@ export default function ItineraryPage() {
         </SortableContext>
       </DndContext>
 
-      <AddStopForm onAdd={handleAddStop} disabled={busy} />
+      <div id="add-stop">
+        <AddStopForm onAdd={handleAddStop} disabled={busy} />
+      </div>
     </div>
   )
 }
@@ -391,18 +425,18 @@ function SortableStopCard({
     <section
       ref={setNodeRef}
       style={style}
-      className={`border border-border bg-muted/40 ${isDragging ? 'opacity-70 shadow-lg' : ''}`}
+      className={`overflow-hidden rounded-lg border border-border bg-surface ${isDragging ? 'opacity-70 shadow-lift' : ''}`}
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
-            className="cursor-grab touch-none rounded border border-border px-2 py-1 text-xs text-muted-fg active:cursor-grabbing"
+            className="inline-flex h-10 w-10 cursor-grab touch-none items-center justify-center rounded-md border border-border bg-bg text-muted-fg transition hover:border-brand/40 hover:text-fg active:cursor-grabbing"
             aria-label={`Drag stop ${stop.city}`}
             {...attributes}
             {...listeners}
           >
-            ⋮⋮
+            <GripVertical className="h-5 w-5" aria-hidden />
           </button>
           <div className="min-w-0">
             <h2 className="truncate font-semibold">
@@ -417,13 +451,15 @@ function SortableStopCard({
             </p>
           </div>
         </div>
-        <button
+        <Button
           type="button"
+          size="sm"
+          variant="ghost"
+          className="text-danger"
           onClick={onRemove}
-          className="rounded border border-border px-2 py-1 text-xs text-muted-fg hover:border-danger/40 hover:text-danger"
         >
           Remove stop
-        </button>
+        </Button>
       </header>
 
       <div className="space-y-3 p-3">
@@ -521,7 +557,7 @@ function SortableActivityRow({
     <li
       ref={setNodeRef}
       style={style}
-      className={`border border-border bg-bg px-2.5 py-2 ${isDragging ? 'opacity-70 shadow-md' : ''}`}
+      className={`rounded-md border border-border bg-bg px-2.5 py-2 ${isDragging ? 'opacity-70 shadow-soft' : ''}`}
     >
       {editing ? (
         <form onSubmit={saveEdit} className="grid gap-2 sm:grid-cols-2">
@@ -594,12 +630,12 @@ function SortableActivityRow({
         <div className="flex items-start gap-2">
           <button
             type="button"
-            className="mt-0.5 cursor-grab touch-none rounded border border-border px-1.5 py-0.5 text-xs text-muted-fg active:cursor-grabbing"
+            className="mt-0.5 inline-flex h-9 w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded-md border border-border bg-muted/50 text-muted-fg transition hover:border-brand/40 hover:text-fg active:cursor-grabbing"
             aria-label={`Drag activity ${activity.name}`}
             {...attributes}
             {...listeners}
           >
-            ⋮⋮
+            <GripVertical className="h-4 w-4" aria-hidden />
           </button>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">

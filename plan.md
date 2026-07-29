@@ -199,14 +199,14 @@ Build order agreed and executed:
 - Remove “Module 3 · 3D Immersion” eyebrow
 - Detailed `README.md`
 
-### Phase B — Landing & globe (Sprint 2)
+### Phase B — Landing & globe (Sprint 2) — implemented (awaiting review)
 
 - Brand-first full-bleed hero
 - Sections: How it works → Features → Destination mosaic → Final CTA
 - Globe: Earth texture, atmosphere glow, arcs between cities; keep WebGL fallback
 - Framer Motion page/section motion
 
-### Phase C — Product UI (Sprint 3)
+### Phase C — Product UI (Sprint 3) — implemented (awaiting review)
 
 ```text
 Landing → Trip gallery (cards) → Trip overview hub
@@ -215,12 +215,13 @@ Landing → Trip gallery (cards) → Trip overview hub
                 └─ Hotels gallery
 ```
 
-- Trip cards with cover image (e.g. Unsplash by first city), status, dates, budget remaining
-- Split oversized Planner into trip overview + focused tools
-- Itinerary: stronger columns, larger drag handles, modal/drawer for add activity
-- Budget: donut/category chart (`recharts`)
+- Trip cards with cover image (static Unsplash by first city), status, dates, budget
+- Split oversized Planner into trip gallery + `/planner/:tripId` overview hub
+- Itinerary: larger GripVertical drag handles, EmptyState/Skeleton/Toast
+- Budget: recharts donut/category chart
 - Hotels: photo placeholders, stronger “Add to budget”
-- Global toasts + skeletons + consistent page headers
+- Shared TripToolNav + toasts/skeletons/empty states
+- Deferred: modal/drawer for add activity (inline form remains)
 
 ### Phase D — Interactive 3D colorful map (priority feature)
 
@@ -334,7 +335,7 @@ These three are **confirmed in scope**. Still **no new vendor API keys**.
 | 0 | Better Auth + Drizzle; Neon + Gemini only | Clerk/Prisma gone |
 | 1 | Design system / shell | App looks branded |
 | 2 | Landing + textured globe | Impressive first impression |
-| 3 | Trip cards / hub / charts | Planner feels like a product |
+| 3 | Trip cards / hub / charts | Planner feels like a product | implemented (awaiting review) |
 | 4 | MapLibre 3D pin + nearby activities | Map wow |
 | 5 | **Packing + Open-Meteo weather + currency converter** | Prep + money tools |
 | 6 | **Journal + photo uploads** | Reflection layer |

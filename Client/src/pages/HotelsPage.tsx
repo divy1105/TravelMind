@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { ArrowLeft, BedDouble, Wallet } from 'lucide-react'
 import {
   tripsApi,
   type CreateHotelPayload,
@@ -8,6 +9,12 @@ import {
   type Trip,
   type UpdateHotelPayload,
 } from '../lib/tripsApi'
+import { hotelPlaceholderUrl } from '../lib/destinationCover'
+import { TripToolNav } from '../components/trips/TripToolNav'
+import { Button } from '../components/ui/Button'
+import { EmptyState } from '../components/ui/EmptyState'
+import { Skeleton } from '../components/ui/Skeleton'
+import { useToast } from '../components/ui/Toast'
 
 const inputClass =
   'rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand focus:ring-2 focus:ring-ring/30'
@@ -47,32 +54,36 @@ function lodgingTotal(hotel: Hotel): number | null {
   return rate * hotel.nights
 }
 
-function sortedStops(stops: Stop[]) {
-  return [...stops].sort((a, b) => a.order - b.order)
+function sortedStops(stops: Stop[] | undefined) {
+  return [...(stops ?? [])].sort((a, b) => a.order - b.order)
 }
 
 export default function HotelsPage() {
   const { tripId } = useParams<{ tripId: string }>()
+  const { toast } = useToast()
   const [trip, setTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [city, setCity] = useState('')
+  const [country, setCountry] = useState('')
 
   const loadTrip = useCallback(async () => {
     if (!tripId) return
-    setError('')
     setLoading(true)
     try {
       const { trip: data } = await tripsApi.get(tripId)
-      setTrip(data)
+      setTrip({ ...data, stops: data.stops ?? [] })
     } catch (err) {
       setTrip(null)
-      setError(err instanceof Error ? err.message : 'Failed to load trip')
+      toast({
+        title: 'Could not load hotels',
+        description: err instanceof Error ? err.message : 'Request failed',
+        variant: 'danger',
+      })
     } finally {
       setLoading(false)
     }
-  }, [tripId])
+  }, [tripId, toast])
 
   useEffect(() => {
     void loadTrip()
@@ -80,15 +91,46 @@ export default function HotelsPage() {
 
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
-    setError('')
-    setMessage('')
     try {
       await fn()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Request failed')
+      toast({
+        title: 'Request failed',
+        description: err instanceof Error ? err.message : 'Try again',
+        variant: 'danger',
+      })
     } finally {
       setBusy(false)
     }
+  }
+
+  async function handleAddStop(e: React.FormEvent) {
+    e.preventDefault()
+    if (!trip || !city.trim()) return
+    await withBusy(async () => {
+      const { stop } = await tripsApi.addStop(trip.id, {
+        city: city.trim(),
+        country: country.trim() || undefined,
+      })
+      setTrip((prev) =>
+        prev
+          ? {
+              ...prev,
+              stops: [
+                ...(prev.stops ?? []),
+                {
+                  ...stop,
+                  activities: stop.activities ?? [],
+                  hotels: stop.hotels ?? [],
+                },
+              ].sort((a, b) => a.order - b.order),
+            }
+          : prev,
+      )
+      setCity('')
+      setCountry('')
+      toast({ title: 'Stop added — add lodging below', variant: 'success' })
+    })
   }
 
   function upsertHotel(stopId: string, hotel: Hotel) {
@@ -129,7 +171,7 @@ export default function HotelsPage() {
     await withBusy(async () => {
       const { hotel } = await tripsApi.addHotel(tripId, stopId, payload)
       upsertHotel(stopId, hotel)
-      setMessage(`Added “${hotel.name}”.`)
+      toast({ title: `Added “${hotel.name}”`, variant: 'success' })
     })
   }
 
@@ -138,7 +180,7 @@ export default function HotelsPage() {
     await withBusy(async () => {
       const { hotel } = await tripsApi.updateHotel(tripId, hotelId, payload)
       upsertHotel(stopId, hotel)
-      setMessage('Hotel updated.')
+      toast({ title: 'Hotel updated', variant: 'success' })
     })
   }
 
@@ -147,7 +189,7 @@ export default function HotelsPage() {
     await withBusy(async () => {
       await tripsApi.removeHotel(tripId, hotelId)
       removeHotelLocal(stopId, hotelId)
-      setMessage('Hotel deleted.')
+      toast({ title: 'Hotel deleted', variant: 'success' })
     })
   }
 
@@ -155,76 +197,127 @@ export default function HotelsPage() {
     if (!tripId) return
     await withBusy(async () => {
       const { line } = await tripsApi.addHotelToBudget(tripId, hotel.id)
-      setMessage(`Added lodging line “${line.label}” (${line.amount}).`)
+      toast({
+        title: 'Added to budget',
+        description: `Lodging line “${line.label}” · ${line.amount}`,
+        variant: 'success',
+      })
     })
   }
 
   if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
+      <div className="mx-auto max-w-4xl space-y-6 py-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-10 w-full max-w-md" />
+        <Skeleton className="h-40 rounded-lg" />
+        <Skeleton className="h-40 rounded-lg" />
       </div>
     )
   }
 
-  if (!trip) {
+  if (!trip || !tripId) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 py-4">
         <Link to="/planner" className="text-sm text-muted-fg underline-offset-2 hover:underline">
-          ← Back to planner
+          ← Back to trips
         </Link>
-        <h1 className="font-display text-2xl font-semibold">Hotels</h1>
-        <p className="text-muted-fg">{error || 'Trip not found.'}</p>
+        <EmptyState
+          icon={<BedDouble className="h-8 w-8" />}
+          title="Hotels unavailable"
+          description="Trip not found or could not be loaded."
+        />
       </div>
     )
   }
 
-  const stops = sortedStops(trip.stops)
+  const stops = sortedStops(trip.stops ?? [])
+  const hotelCount = stops.reduce((n, s) => n + (s.hotels?.length ?? 0), 0)
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 py-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Link
-            to="/planner"
-            className="text-sm text-muted-fg underline-offset-2 hover:underline"
-          >
-            ← Back to planner
-          </Link>
-          <h1 className="mt-2 font-display text-2xl font-semibold">{trip.title}</h1>
-          <p className="mt-1 text-sm text-muted-fg">
-            Hotels · {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
-          </p>
-          <p className="mt-1 text-sm text-muted-fg">
-            Save lodging notes per city. Add priced stays to the trip budget.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            to={`/planner/${trip.id}/itinerary`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-          >
-            Itinerary
-          </Link>
-          <Link
-            to={`/planner/${trip.id}/budget`}
-            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
-          >
-            Budget
-          </Link>
+    <div className="mx-auto max-w-4xl space-y-6 py-4">
+      <div className="space-y-3">
+        <Link
+          to={`/planner/${trip.id}`}
+          className="inline-flex items-center gap-1.5 text-sm text-muted-fg hover:text-fg"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+          Trip overview
+        </Link>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-semibold">{trip.title}</h1>
+            <p className="mt-1 text-sm text-muted-fg">
+              Hotels · {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
+            </p>
+          </div>
           {busy && <span className="self-center text-xs text-muted-fg">Saving…</span>}
         </div>
+        <TripToolNav tripId={trip.id} />
       </div>
 
-      {error && <p className="text-sm text-danger">{error}</p>}
-      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
-
       {stops.length === 0 ? (
-        <p className="border border-dashed border-border px-4 py-8 text-center text-sm text-muted-fg">
-          No stops yet. Add cities in the planner or itinerary first.
-        </p>
-      ) : (
         <div className="space-y-4">
+          <EmptyState
+            icon={<BedDouble className="h-8 w-8" />}
+            title="0 hotels · add a stop first"
+            description="Lodging is saved per city. Add a stop below, then attach a hotel to that stop."
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <a
+                  href="#add-hotel-stop"
+                  className="inline-flex h-8 items-center rounded-md bg-brand px-3 text-xs font-medium text-brand-fg hover:opacity-90"
+                >
+                  Add a city stop
+                </a>
+                <Link
+                  to={`/planner/${trip.id}`}
+                  className="inline-flex h-8 items-center rounded-md border border-border bg-surface px-3 text-xs font-medium text-fg hover:border-brand/40"
+                >
+                  Open overview
+                </Link>
+              </div>
+            }
+          />
+          <form
+            id="add-hotel-stop"
+            onSubmit={handleAddStop}
+            className="grid gap-2 rounded-lg border border-border bg-muted/40 p-4 sm:grid-cols-[1fr_1fr_auto]"
+          >
+            <input
+              className={inputClass}
+              placeholder="Add city"
+              value={city}
+              onChange={(e) => setCity(e.target.value)}
+              required
+              disabled={busy}
+            />
+            <input
+              className={inputClass}
+              placeholder="Country (optional)"
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+              disabled={busy}
+            />
+            <Button type="submit" disabled={busy || !city.trim()}>
+              {busy ? 'Adding…' : 'Add stop'}
+            </Button>
+          </form>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {hotelCount === 0 && (
+            <div className="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-fg">
+              No hotels yet. Add lodging under each stop below, or run{' '}
+              <Link
+                to={`/planner/${trip.id}`}
+                className="font-medium text-fg underline-offset-2 hover:underline"
+              >
+                Generate with AI
+              </Link>{' '}
+              on the overview to seed suggestions.
+            </div>
+          )}
           {stops.map((stop, idx) => (
             <StopHotelsCard
               key={stop.id}
@@ -328,8 +421,8 @@ function StopHotelsCard({
   }
 
   return (
-    <section className="border border-border bg-muted/40">
-      <header className="border-b border-border px-3 py-2.5">
+    <section className="overflow-hidden rounded-lg border border-border bg-surface">
+      <header className="border-b border-border bg-muted/40 px-4 py-3">
         <span className="mr-2 text-xs text-muted-fg">{index + 1}.</span>
         <span className="font-medium">{stop.city}</span>
         {stop.country && <span className="text-muted-fg">, {stop.country}</span>}
@@ -338,44 +431,55 @@ function StopHotelsCard({
         </span>
       </header>
 
-      <div className="space-y-3 px-3 py-3">
+      <div className="space-y-4 p-4">
         {hotels.length === 0 ? (
-          <p className="text-sm text-muted-fg">No hotels saved for this stop.</p>
+          <p className="text-sm text-muted-fg">
+            No hotels for {stop.city} yet — use the form below to add one.
+          </p>
         ) : (
-          <ul className="space-y-3">
+          <ul className="grid gap-4 sm:grid-cols-2">
             {hotels.map((hotel) => {
               const total = lodgingTotal(hotel)
               const isEditing = editingId === hotel.id
+              const photo = hotelPlaceholderUrl(stop.city, hotel.name)
               return (
-                <li key={hotel.id} className="border border-border px-3 py-2">
+                <li
+                  key={hotel.id}
+                  className="overflow-hidden rounded-lg border border-border bg-bg"
+                >
                   {isEditing ? (
-                    <form onSubmit={submitEdit} className="grid gap-2 sm:grid-cols-2">
-                      <HotelFields
-                        values={edit}
-                        onChange={setEdit}
-                        disabled={disabled}
-                      />
+                    <form onSubmit={submitEdit} className="grid gap-2 p-3 sm:grid-cols-2">
+                      <HotelFields values={edit} onChange={setEdit} disabled={disabled} />
                       <div className="flex flex-wrap gap-2 sm:col-span-2">
-                        <button
+                        <Button
                           type="submit"
+                          size="sm"
                           disabled={disabled || !edit.name.trim()}
-                          className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
                         >
                           Save
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           type="button"
+                          size="sm"
+                          variant="secondary"
                           disabled={disabled}
                           onClick={() => setEditingId(null)}
-                          className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg"
                         >
                           Cancel
-                        </button>
+                        </Button>
                       </div>
                     </form>
                   ) : (
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-start justify-between gap-2">
+                    <>
+                      <div className="aspect-[16/10] overflow-hidden bg-muted">
+                        <img
+                          src={photo}
+                          alt=""
+                          className="h-full w-full object-cover"
+                          loading="lazy"
+                        />
+                      </div>
+                      <div className="space-y-3 p-3">
                         <div>
                           <div className="font-medium">{hotel.name}</div>
                           {hotel.address && (
@@ -413,35 +517,46 @@ function StopHotelsCard({
                           )}
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {hotel.nightlyRate != null && (
-                            <button
-                              type="button"
+                          {hotel.nightlyRate != null ? (
+                            <Button
+                              size="sm"
                               disabled={disabled}
                               onClick={() => onAddToBudget(hotel)}
-                              className="rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-brand-fg disabled:opacity-50"
+                              className="gap-1.5"
                             >
+                              <Wallet className="h-3.5 w-3.5" aria-hidden />
                               Add to budget
-                            </button>
+                              {total != null && (
+                                <span className="opacity-80">
+                                  · {formatMoney(String(total), currency)}
+                                </span>
+                              )}
+                            </Button>
+                          ) : (
+                            <p className="text-xs text-muted-fg">
+                              Set a nightly rate to push lodging into the budget.
+                            </p>
                           )}
-                          <button
-                            type="button"
+                          <Button
+                            size="sm"
+                            variant="secondary"
                             disabled={disabled}
                             onClick={() => startEdit(hotel)}
-                            className="rounded border border-border px-2.5 py-1 text-xs text-muted-fg"
                           >
                             Edit
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-danger"
                             disabled={disabled}
                             onClick={() => onRemove(hotel.id)}
-                            className="rounded border border-border px-2.5 py-1 text-xs text-muted-fg hover:border-danger/50 hover:text-danger"
                           >
                             Delete
-                          </button>
+                          </Button>
                         </div>
                       </div>
-                    </div>
+                    </>
                   )}
                 </li>
               )
@@ -449,17 +564,16 @@ function StopHotelsCard({
           </ul>
         )}
 
-        <form onSubmit={submitAdd} className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2">
+        <form
+          onSubmit={submitAdd}
+          className="grid gap-2 rounded-lg border border-dashed border-border bg-muted/30 p-3 sm:grid-cols-2"
+        >
           <p className={`sm:col-span-2 ${labelText}`}>Add hotel</p>
           <HotelFields values={form} onChange={setForm} disabled={disabled} />
           <div className="sm:col-span-2">
-            <button
-              type="submit"
-              disabled={disabled || !form.name.trim()}
-              className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
-            >
+            <Button type="submit" size="sm" disabled={disabled || !form.name.trim()}>
               Add hotel
-            </button>
+            </Button>
           </div>
         </form>
       </div>

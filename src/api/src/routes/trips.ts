@@ -179,7 +179,7 @@ function serializeTrip(t: {
   return {
     ...t,
     totalBudget: String(t.totalBudget),
-    stops: t.stops?.map((s) => ({
+    stops: (t.stops ?? []).map((s) => ({
       ...s,
       activities: (s.activities ?? []).map(serializeActivity),
       hotels: (s.hotels ?? []).map(serializeHotel),
@@ -299,7 +299,11 @@ export function tripsRouter() {
       }
 
       const created = await loadTripWithDetails(tripId, userId)
-      res.status(201).json({ trip: serializeTrip(created!) })
+      if (!created) {
+        res.status(500).json({ error: 'Trip created but could not be reloaded' })
+        return
+      }
+      res.status(201).json({ trip: serializeTrip(created) })
     } catch (err) {
       const statusCode = (err as { status?: number }).status
       if (statusCode === 400) {
@@ -507,7 +511,13 @@ export function tripsRouter() {
         })
         .returning()
 
-      res.status(201).json({ stop: created })
+      res.status(201).json({
+        stop: {
+          ...created,
+          activities: [],
+          hotels: [],
+        },
+      })
     } catch (err) {
       const statusCode = (err as { status?: number }).status
       if (statusCode === 400) {
@@ -811,7 +821,12 @@ export function tripsRouter() {
 
       const found = await db.query.trip.findFirst({
         where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
-        with: { stops: { orderBy: [asc(stop.order)] } },
+        with: {
+          stops: {
+            orderBy: [asc(stop.order)],
+            with: { hotels: true },
+          },
+        },
       })
       if (!found) {
         res.status(404).json({ error: 'Trip not found' })
@@ -834,6 +849,9 @@ export function tripsRouter() {
       })
 
       const stopIds = found.stops.map((s) => s.id)
+      const stopsWithHotels = new Set(
+        found.stops.filter((s) => s.hotels.length > 0).map((s) => s.id),
+      )
 
       await db.transaction(async (tx) => {
         if (stopIds.length > 0) {
@@ -850,26 +868,6 @@ export function tripsRouter() {
         for (const planned of plan.stops) {
           const rows: (typeof activity.$inferInsert)[] = []
 
-          if (planned.hotelSuggestion?.name) {
-            const nightly = planned.hotelSuggestion.estimatedNightlyCost
-            const hotelNotes = [
-              nightly != null ? `Est. ${nightly} ${found.currency}/night` : null,
-              planned.hotelSuggestion.notes,
-            ]
-              .filter(Boolean)
-              .join(' · ')
-
-            rows.push({
-              id: randomUUID(),
-              stopId: planned.stopId,
-              name: planned.hotelSuggestion.name,
-              category: 'hotel',
-              cost: nightly != null ? String(nightly) : null,
-              notes: hotelNotes || null,
-              order: 0,
-            })
-          }
-
           planned.activities.forEach((act, idx) => {
             rows.push({
               id: randomUUID(),
@@ -880,12 +878,26 @@ export function tripsRouter() {
               startTime: act.startTime ?? null,
               endTime: act.endTime ?? null,
               notes: act.notes ?? null,
-              order: idx + 1,
+              order: idx,
             })
           })
 
           if (rows.length > 0) {
             await tx.insert(activity).values(rows)
+          }
+
+          // Persist lodging on the Hotels page (not as itinerary activities).
+          // Skip stops that already have user-saved hotels so regenerate is safe.
+          if (planned.hotelSuggestion?.name && !stopsWithHotels.has(planned.stopId)) {
+            const nightly = planned.hotelSuggestion.estimatedNightlyCost
+            const hotelNotes = planned.hotelSuggestion.notes?.trim() || null
+            await tx.insert(hotel).values({
+              id: randomUUID(),
+              stopId: planned.stopId,
+              name: planned.hotelSuggestion.name.trim(),
+              nightlyRate: nightly != null ? String(nightly) : null,
+              notes: hotelNotes,
+            })
           }
         }
 
