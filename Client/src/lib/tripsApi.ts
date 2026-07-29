@@ -2,6 +2,20 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001'
 
 export type TripStatus = 'draft' | 'planning' | 'active' | 'completed'
 
+export interface Activity {
+  id: string
+  stopId: string
+  name: string
+  category: string | null
+  cost: string | null
+  startTime: string | null
+  endTime: string | null
+  notes: string | null
+  order: number
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Stop {
   id: string
   tripId: string
@@ -12,6 +26,7 @@ export interface Stop {
   departureDate: string | null
   createdAt: string
   updatedAt: string
+  activities?: Activity[]
 }
 
 export interface Trip {
@@ -27,6 +42,15 @@ export interface Trip {
   createdAt: string
   updatedAt: string
   stops: Stop[]
+}
+
+export interface BudgetHint {
+  lodging?: number | null
+  activities?: number | null
+  food?: number | null
+  transport?: number | null
+  other?: number | null
+  notes?: string | null
 }
 
 export interface CreateTripPayload {
@@ -54,6 +78,16 @@ export interface UpdateTripPayload {
   currency?: string
   interests?: string[]
   status?: string
+}
+
+export interface UpdateActivityPayload {
+  name?: string
+  category?: string | null
+  cost?: number | string | null
+  startTime?: string | null
+  endTime?: string | null
+  notes?: string | null
+  order?: number
 }
 
 async function apiFetch<T>(
@@ -133,5 +167,29 @@ export const tripsApi = {
     apiFetch<{ trip: Trip }>(`/api/trips/${tripId}/stops/reorder`, token, {
       method: 'PATCH',
       body: JSON.stringify({ stops }),
+    }),
+
+  generate: (token: string | null, tripId: string) =>
+    apiFetch<{ trip: Trip; budgetHint: BudgetHint | null }>(
+      `/api/trips/${tripId}/generate`,
+      token,
+      { method: 'POST' },
+    ),
+
+  updateActivity: (
+    token: string | null,
+    tripId: string,
+    activityId: string,
+    payload: UpdateActivityPayload,
+  ) =>
+    apiFetch<{ activity: Activity }>(
+      `/api/trips/${tripId}/activities/${activityId}`,
+      token,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+    ),
+
+  removeActivity: (token: string | null, tripId: string, activityId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/activities/${activityId}`, token, {
+      method: 'DELETE',
     }),
 }

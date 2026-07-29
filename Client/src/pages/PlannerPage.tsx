@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { isClerkConfigured } from '../lib/clerk'
 import {
   tripsApi,
+  type Activity,
+  type BudgetHint,
   type CreateTripPayload,
   type Trip,
 } from '../lib/tripsApi'
@@ -222,6 +224,85 @@ function ClerkPlannerPage() {
       setTrips((prev) => prev.map((t) => (t.id === trip.id ? updated : t)))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reorder stops')
+    }
+  }
+
+  async function handleGenerate(tripId: string) {
+    setError('')
+    setMessage('')
+    try {
+      const token = await getToken()
+      const { trip: updated, budgetHint } = await tripsApi.generate(token, tripId)
+      setTrips((prev) => prev.map((t) => (t.id === tripId ? updated : t)))
+      const hintParts = budgetHint
+        ? [
+            budgetHint.lodging != null ? `lodging ${budgetHint.lodging}` : null,
+            budgetHint.activities != null ? `activities ${budgetHint.activities}` : null,
+            budgetHint.food != null ? `food ${budgetHint.food}` : null,
+            budgetHint.transport != null ? `transport ${budgetHint.transport}` : null,
+          ].filter(Boolean)
+        : []
+      setMessage(
+        hintParts.length
+          ? `AI plan generated. Budget hint: ${hintParts.join(', ')} ${updated.currency}.`
+          : 'AI plan generated.',
+      )
+      return budgetHint
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate plan')
+      throw err
+    }
+  }
+
+  async function handleUpdateActivity(
+    tripId: string,
+    activityId: string,
+    payload: { name?: string; notes?: string | null },
+  ) {
+    setError('')
+    try {
+      const token = await getToken()
+      const { activity } = await tripsApi.updateActivity(token, tripId, activityId, payload)
+      setTrips((prev) =>
+        prev.map((t) =>
+          t.id !== tripId
+            ? t
+            : {
+                ...t,
+                stops: t.stops.map((s) => ({
+                  ...s,
+                  activities: (s.activities ?? []).map((a) =>
+                    a.id === activityId ? activity : a,
+                  ),
+                })),
+              },
+        ),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update activity')
+    }
+  }
+
+  async function handleRemoveActivity(tripId: string, activityId: string) {
+    setError('')
+    try {
+      const token = await getToken()
+      await tripsApi.removeActivity(token, tripId, activityId)
+      setTrips((prev) =>
+        prev.map((t) =>
+          t.id !== tripId
+            ? t
+            : {
+                ...t,
+                stops: t.stops.map((s) => ({
+                  ...s,
+                  activities: (s.activities ?? []).filter((a) => a.id !== activityId),
+                })),
+              },
+        ),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete activity')
     }
   }
 
@@ -457,6 +538,9 @@ function ClerkPlannerPage() {
                       onAddStop={handleAddStop}
                       onRemoveStop={handleRemoveStop}
                       onMoveStop={moveStop}
+                      onGenerate={handleGenerate}
+                      onUpdateActivity={handleUpdateActivity}
+                      onRemoveActivity={handleRemoveActivity}
                     />
                   )}
                 </li>
@@ -474,17 +558,33 @@ function TripDetail({
   onAddStop,
   onRemoveStop,
   onMoveStop,
+  onGenerate,
+  onUpdateActivity,
+  onRemoveActivity,
 }: {
   trip: Trip
   onAddStop: (tripId: string, city: string, country: string) => Promise<void>
   onRemoveStop: (tripId: string, stopId: string) => Promise<void>
   onMoveStop: (trip: Trip, stopId: string, direction: -1 | 1) => Promise<void>
+  onGenerate: (tripId: string) => Promise<BudgetHint | null | undefined>
+  onUpdateActivity: (
+    tripId: string,
+    activityId: string,
+    payload: { name?: string; notes?: string | null },
+  ) => Promise<void>
+  onRemoveActivity: (tripId: string, activityId: string) => Promise<void>
 }) {
   const [city, setCity] = useState('')
   const [country, setCountry] = useState('')
   const [adding, setAdding] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [budgetHint, setBudgetHint] = useState<BudgetHint | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editNotes, setEditNotes] = useState('')
 
   const sorted = [...trip.stops].sort((a, b) => a.order - b.order)
+  const activityCount = sorted.reduce((n, s) => n + (s.activities?.length ?? 0), 0)
 
   async function submitStop(e: React.FormEvent) {
     e.preventDefault()
@@ -498,6 +598,33 @@ function TripDetail({
     }
   }
 
+  async function runGenerate() {
+    if (sorted.length === 0) return
+    setGenerating(true)
+    try {
+      const hint = await onGenerate(trip.id)
+      setBudgetHint(hint ?? null)
+    } catch {
+      /* parent sets error */
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  function startEdit(activity: Activity) {
+    setEditingId(activity.id)
+    setEditName(activity.name)
+    setEditNotes(activity.notes ?? '')
+  }
+
+  async function saveEdit(activityId: string) {
+    await onUpdateActivity(trip.id, activityId, {
+      name: editName.trim(),
+      notes: editNotes.trim() || null,
+    })
+    setEditingId(null)
+  }
+
   return (
     <div className="space-y-4 border-t border-fg/10 bg-fg/[0.02] px-4 py-4">
       {trip.interests.length > 0 && (
@@ -507,58 +634,176 @@ function TripDetail({
         </p>
       )}
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-fg/60">
+          {activityCount > 0
+            ? `${activityCount} draft activit${activityCount === 1 ? 'y' : 'ies'}`
+            : 'No AI activities yet'}
+        </p>
+        <button
+          type="button"
+          disabled={generating || sorted.length === 0}
+          onClick={runGenerate}
+          className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
+        >
+          {generating ? 'Generating…' : 'Generate with AI'}
+        </button>
+      </div>
+
+      {generating && (
+        <p className="text-sm text-fg/60">Asking Gemini for a draft plan…</p>
+      )}
+
+      {budgetHint && (
+        <div className="text-sm text-fg/70">
+          <span className="font-medium text-fg">Budget hint</span>
+          <ul className="mt-1 list-inside list-disc text-fg/60">
+            {budgetHint.lodging != null && <li>Lodging: {budgetHint.lodging}</li>}
+            {budgetHint.activities != null && <li>Activities: {budgetHint.activities}</li>}
+            {budgetHint.food != null && <li>Food: {budgetHint.food}</li>}
+            {budgetHint.transport != null && <li>Transport: {budgetHint.transport}</li>}
+            {budgetHint.other != null && <li>Other: {budgetHint.other}</li>}
+          </ul>
+          {budgetHint.notes && <p className="mt-1">{budgetHint.notes}</p>}
+        </div>
+      )}
+
       <div>
         <h3 className="mb-2 text-sm font-medium text-fg/70">Itinerary stops</h3>
         {sorted.length === 0 ? (
-          <p className="text-sm text-fg/60">No stops yet.</p>
+          <p className="text-sm text-fg/60">No stops yet. Add a city, then generate.</p>
         ) : (
-          <ol className="space-y-2">
-            {sorted.map((stop, idx) => (
-              <li
-                key={stop.id}
-                className="flex flex-wrap items-center justify-between gap-2 border border-fg/10 px-3 py-2"
-              >
-                <div>
-                  <span className="mr-2 text-xs text-fg/50">{idx + 1}.</span>
-                  <span className="font-medium">{stop.city}</span>
-                  {stop.country && (
-                    <span className="text-fg/60">, {stop.country}</span>
-                  )}
-                  {(stop.arrivalDate || stop.departureDate) && (
-                    <div className="mt-0.5 text-xs text-fg/50">
-                      {stop.arrivalDate && `Arr ${toDateInputValue(stop.arrivalDate)}`}
-                      {stop.arrivalDate && stop.departureDate && ' · '}
-                      {stop.departureDate && `Dep ${toDateInputValue(stop.departureDate)}`}
+          <ol className="space-y-3">
+            {sorted.map((stop, idx) => {
+              const activities = [...(stop.activities ?? [])].sort((a, b) => a.order - b.order)
+              return (
+                <li key={stop.id} className="border border-fg/10 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="mr-2 text-xs text-fg/50">{idx + 1}.</span>
+                      <span className="font-medium">{stop.city}</span>
+                      {stop.country && (
+                        <span className="text-fg/60">, {stop.country}</span>
+                      )}
+                      {(stop.arrivalDate || stop.departureDate) && (
+                        <div className="mt-0.5 text-xs text-fg/50">
+                          {stop.arrivalDate && `Arr ${toDateInputValue(stop.arrivalDate)}`}
+                          {stop.arrivalDate && stop.departureDate && ' · '}
+                          {stop.departureDate && `Dep ${toDateInputValue(stop.departureDate)}`}
+                        </div>
+                      )}
                     </div>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        className="rounded border border-fg/15 px-2 py-1 text-xs disabled:opacity-30"
+                        disabled={idx === 0}
+                        onClick={() => onMoveStop(trip, stop.id, -1)}
+                      >
+                        Up
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-fg/15 px-2 py-1 text-xs disabled:opacity-30"
+                        disabled={idx === sorted.length - 1}
+                        onClick={() => onMoveStop(trip, stop.id, 1)}
+                      >
+                        Down
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-fg/15 px-2 py-1 text-xs text-fg/70 hover:border-red-500/40"
+                        onClick={() => onRemoveStop(trip.id, stop.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+
+                  {activities.length > 0 && (
+                    <ul className="mt-2 space-y-2 border-t border-fg/10 pt-2">
+                      {activities.map((activity) => (
+                        <li key={activity.id} className="text-sm">
+                          {editingId === activity.id ? (
+                            <div className="flex flex-col gap-2">
+                              <input
+                                className={inputClass}
+                                value={editName}
+                                onChange={(e) => setEditName(e.target.value)}
+                              />
+                              <input
+                                className={inputClass}
+                                placeholder="Notes"
+                                value={editNotes}
+                                onChange={(e) => setEditNotes(e.target.value)}
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  className="rounded bg-fg px-2 py-1 text-xs text-bg"
+                                  onClick={() => saveEdit(activity.id)}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded border border-fg/20 px-2 py-1 text-xs"
+                                  onClick={() => setEditingId(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <span className="font-medium">{activity.name}</span>
+                                {activity.category && (
+                                  <span className="ml-2 text-xs capitalize text-fg/50">
+                                    {activity.category}
+                                  </span>
+                                )}
+                                <div className="mt-0.5 text-xs text-fg/55">
+                                  {[
+                                    activity.startTime || activity.endTime
+                                      ? [activity.startTime, activity.endTime]
+                                          .filter(Boolean)
+                                          .join('–')
+                                      : null,
+                                    activity.cost != null
+                                      ? `${activity.cost} ${trip.currency}`
+                                      : null,
+                                    activity.notes,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ')}
+                                </div>
+                              </div>
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  className="rounded border border-fg/15 px-2 py-0.5 text-xs"
+                                  onClick={() => startEdit(activity)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded border border-fg/15 px-2 py-0.5 text-xs text-fg/70 hover:border-red-500/40"
+                                  onClick={() => onRemoveActivity(trip.id, activity.id)}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   )}
-                </div>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    className="rounded border border-fg/15 px-2 py-1 text-xs disabled:opacity-30"
-                    disabled={idx === 0}
-                    onClick={() => onMoveStop(trip, stop.id, -1)}
-                  >
-                    Up
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded border border-fg/15 px-2 py-1 text-xs disabled:opacity-30"
-                    disabled={idx === sorted.length - 1}
-                    onClick={() => onMoveStop(trip, stop.id, 1)}
-                  >
-                    Down
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded border border-fg/15 px-2 py-1 text-xs text-fg/70 hover:border-red-500/40"
-                    onClick={() => onRemoveStop(trip.id, stop.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
-            ))}
+                </li>
+              )
+            })}
           </ol>
         )}
       </div>
