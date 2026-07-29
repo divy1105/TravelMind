@@ -609,6 +609,158 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
+  // POST /api/trips/:id/stops/:stopId/activities — add activity to a stop
+  router.post('/api/trips/:id/stops/:stopId/activities', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const stop = await prisma.stop.findFirst({
+        where: { id: req.params.stopId, tripId: trip.id },
+        include: { activities: true },
+      })
+      if (!stop) {
+        res.status(404).json({ error: 'Stop not found' })
+        return
+      }
+
+      const { name, category, cost, startTime, endTime, notes, order } = req.body as {
+        name?: string
+        category?: string | null
+        cost?: number | string | null
+        startTime?: string | null
+        endTime?: string | null
+        notes?: string | null
+        order?: number
+      }
+
+      if (!name?.trim()) {
+        res.status(400).json({ error: 'name is required' })
+        return
+      }
+
+      const nextOrder =
+        typeof order === 'number'
+          ? order
+          : stop.activities.reduce((max, a) => Math.max(max, a.order), -1) + 1
+
+      const activity = await prisma.activity.create({
+        data: {
+          stopId: stop.id,
+          name: name.trim(),
+          category: category?.trim() || null,
+          cost: cost === '' || cost === null || cost === undefined ? null : cost,
+          startTime: startTime?.trim() || null,
+          endTime: endTime?.trim() || null,
+          notes: notes?.trim() || null,
+          order: nextOrder,
+        },
+      })
+
+      res.status(201).json({ activity: serializeActivity(activity) })
+    } catch (err) {
+      console.error('[trips/:id/stops/:stopId/activities POST]', err)
+      res.status(500).json({ error: 'Failed to add activity' })
+    }
+  })
+
+  // PATCH /api/trips/:id/stops/:stopId/activities/reorder — reorder activities within a stop
+  router.patch(
+    '/api/trips/:id/stops/:stopId/activities/reorder',
+    requireAuth(),
+    async (req, res) => {
+      try {
+        const { userId: externalId } = getAuth(req)
+        if (!externalId) {
+          res.status(401).json({ error: 'Unauthorized' })
+          return
+        }
+
+        const user = await resolveDbUser(prisma, externalId)
+        if (!user) {
+          res.status(404).json({ error: 'User not found' })
+          return
+        }
+
+        const trip = await prisma.trip.findFirst({
+          where: { id: req.params.id, userId: user.id },
+        })
+        if (!trip) {
+          res.status(404).json({ error: 'Trip not found' })
+          return
+        }
+
+        const stop = await prisma.stop.findFirst({
+          where: { id: req.params.stopId, tripId: trip.id },
+          include: { activities: true },
+        })
+        if (!stop) {
+          res.status(404).json({ error: 'Stop not found' })
+          return
+        }
+
+        const { activities: orderList } = req.body as {
+          activities?: Array<{ id: string; order: number }>
+        }
+
+        if (!Array.isArray(orderList) || orderList.length === 0) {
+          res.status(400).json({ error: 'activities array of {id, order} is required' })
+          return
+        }
+
+        const ownedIds = new Set(stop.activities.map((a) => a.id))
+        for (const item of orderList) {
+          if (!item.id || typeof item.order !== 'number') {
+            res.status(400).json({ error: 'Each item needs id and numeric order' })
+            return
+          }
+          if (!ownedIds.has(item.id)) {
+            res
+              .status(400)
+              .json({ error: `Activity ${item.id} does not belong to this stop` })
+            return
+          }
+        }
+
+        await prisma.$transaction(
+          orderList.map((item) =>
+            prisma.activity.update({
+              where: { id: item.id },
+              data: { order: item.order },
+            }),
+          ),
+        )
+
+        const updated = await prisma.trip.findUnique({
+          where: { id: trip.id },
+          include: tripInclude,
+        })
+
+        res.json({ trip: serializeTrip(updated!) })
+      } catch (err) {
+        console.error('[trips/:id/stops/:stopId/activities/reorder PATCH]', err)
+        res.status(500).json({ error: 'Failed to reorder activities' })
+      }
+    },
+  )
+
   /**
    * POST /api/trips/:id/generate — AI itinerary draft (owner only).
    * Replace strategy: deletes ALL existing activities on every stop for this trip,

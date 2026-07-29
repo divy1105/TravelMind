@@ -80,6 +80,16 @@ export interface UpdateTripPayload {
   status?: string
 }
 
+export interface CreateActivityPayload {
+  name: string
+  category?: string | null
+  cost?: number | string | null
+  startTime?: string | null
+  endTime?: string | null
+  notes?: string | null
+  order?: number
+}
+
 export interface UpdateActivityPayload {
   name?: string
   category?: string | null
@@ -174,6 +184,30 @@ export const tripsApi = {
       `/api/trips/${tripId}/generate`,
       token,
       { method: 'POST' },
+    ),
+
+  addActivity: (
+    token: string | null,
+    tripId: string,
+    stopId: string,
+    payload: CreateActivityPayload,
+  ) =>
+    apiFetch<{ activity: Activity }>(
+      `/api/trips/${tripId}/stops/${stopId}/activities`,
+      token,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  reorderActivities: (
+    token: string | null,
+    tripId: string,
+    stopId: string,
+    activities: Array<{ id: string; order: number }>,
+  ) =>
+    apiFetch<{ trip: Trip }>(
+      `/api/trips/${tripId}/stops/${stopId}/activities/reorder`,
+      token,
+      { method: 'PATCH', body: JSON.stringify({ activities }) },
     ),
 
   updateActivity: (

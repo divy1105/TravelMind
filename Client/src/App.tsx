@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import AppLayout from './layouts/AppLayout'
 import HomePage from './pages/HomePage'
 import PlannerPage from './pages/PlannerPage'
+import ItineraryPage from './pages/ItineraryPage'
 import SignInPage from './pages/SignInPage'
 import SignUpPage from './pages/SignUpPage'
 import ProfilePage from './pages/ProfilePage'
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="sign-up/*" element={<SignUpPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="planner" element={<PlannerPage />} />
+          <Route path="planner/:tripId/itinerary" element={<ItineraryPage />} />
           <Route path="profile" element={<ProfilePage />} />
         </Route>
       </Route>

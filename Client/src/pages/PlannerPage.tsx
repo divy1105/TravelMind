@@ -1,5 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { isClerkConfigured } from '../lib/clerk'
 import {
   tripsApi,
@@ -320,7 +321,7 @@ function ClerkPlannerPage() {
         <div>
           <h1 className="text-2xl font-bold">Planner</h1>
           <p className="mt-1 text-sm text-fg/70">
-            Create trips and arrange multi-city stops.
+            Create trips, generate AI drafts, then polish the itinerary city by city.
           </p>
         </div>
         <button
@@ -515,6 +516,12 @@ function ClerkPlannerPage() {
                       </div>
                     </button>
                     <div className="flex gap-2">
+                      <Link
+                        to={`/planner/${trip.id}/itinerary`}
+                        className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90"
+                      >
+                        Itinerary
+                      </Link>
                       <button
                         type="button"
                         className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
@@ -640,14 +647,22 @@ function TripDetail({
             ? `${activityCount} draft activit${activityCount === 1 ? 'y' : 'ies'}`
             : 'No AI activities yet'}
         </p>
-        <button
-          type="button"
-          disabled={generating || sorted.length === 0}
-          onClick={runGenerate}
-          className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
-        >
-          {generating ? 'Generating…' : 'Generate with AI'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            to={`/planner/${trip.id}/itinerary`}
+            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+          >
+            Open itinerary builder
+          </Link>
+          <button
+            type="button"
+            disabled={generating || sorted.length === 0}
+            onClick={runGenerate}
+            className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
+          >
+            {generating ? 'Generating…' : 'Generate with AI'}
+          </button>
+        </div>
       </div>
 
       {generating && (
