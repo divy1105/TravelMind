@@ -1,11 +1,10 @@
-import { useAuth } from '@clerk/clerk-react'
 import { Navigate, Outlet } from 'react-router-dom'
-import { isClerkConfigured } from '../../lib/clerk'
+import { useSession } from '../../lib/auth'
 
-function ClerkProtectedRoute() {
-  const { isSignedIn, isLoaded } = useAuth()
+export default function ProtectedRoute() {
+  const { data: session, isPending } = useSession()
 
-  if (!isLoaded) {
+  if (isPending) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-fg" />
@@ -13,17 +12,9 @@ function ClerkProtectedRoute() {
     )
   }
 
-  if (!isSignedIn) {
+  if (!session) {
     return <Navigate to="/sign-in" replace />
   }
 
   return <Outlet />
-}
-
-export default function ProtectedRoute() {
-  // Allow local preview of protected pages when Clerk is not configured.
-  if (!isClerkConfigured) {
-    return <Outlet />
-  }
-  return <ClerkProtectedRoute />
 }

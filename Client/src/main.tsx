@@ -1,26 +1,24 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import { ClerkProvider } from '@clerk/clerk-react'
+import '@fontsource/fraunces/400.css'
+import '@fontsource/fraunces/600.css'
+import '@fontsource/dm-sans/400.css'
+import '@fontsource/dm-sans/500.css'
+import '@fontsource/dm-sans/600.css'
 import App from './App'
 import { ThemeProvider } from './components/Theme/ThemeProvider'
-import { clerkPublishableKey, isClerkConfigured } from './lib/clerk'
+import { ToastProvider } from './components/ui/Toast'
 import './styles/global.css'
-
-const app = (
-  <ThemeProvider>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </ThemeProvider>
-)
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    {isClerkConfigured ? (
-      <ClerkProvider publishableKey={clerkPublishableKey!}>{app}</ClerkProvider>
-    ) : (
-      app
-    )}
-  </React.StrictMode>
+    <ThemeProvider>
+      <ToastProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </ToastProvider>
+    </ThemeProvider>
+  </React.StrictMode>,
 )

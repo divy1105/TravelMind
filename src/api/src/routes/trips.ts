@@ -1,6 +1,16 @@
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import { Router } from 'express'
-import { Prisma, type PrismaClient } from '@prisma/client'
-import { requireAuth, getAuth } from '../middleware/auth'
+import { randomUUID } from 'crypto'
+import { db } from '../db'
+import {
+  activity,
+  aiGeneration,
+  budgetLine,
+  hotel,
+  stop,
+  trip,
+} from '../db/schema'
+import { requireAuth, getAuthUserId } from '../middleware/auth'
 import { generateTripPlan } from '../services/geminiTripPlanner'
 
 const VALID_STATUSES = new Set(['draft', 'planning', 'active', 'completed'])
@@ -12,16 +22,6 @@ const BUDGET_CATEGORIES = new Set([
   'other',
 ])
 
-const tripInclude = {
-  stops: {
-    orderBy: { order: 'asc' as const },
-    include: {
-      activities: { orderBy: { order: 'asc' as const } },
-      hotels: { orderBy: { createdAt: 'asc' as const } },
-    },
-  },
-}
-
 type StopInput = {
   city: string
   country?: string | null
@@ -30,22 +30,15 @@ type StopInput = {
   departureDate?: string | null
 }
 
-type ActivityRow = {
-  id: string
-  stopId: string
-  name: string
-  category: string | null
-  cost: Prisma.Decimal | null
-  startTime: string | null
-  endTime: string | null
-  notes: string | null
-  order: number
-  createdAt: Date
-  updatedAt: Date
-}
-
-async function resolveDbUser(prisma: PrismaClient, externalId: string) {
-  return prisma.user.findUnique({ where: { externalId } })
+type ActivityRow = typeof activity.$inferSelect
+type HotelRow = typeof hotel.$inferSelect
+type BudgetLineRow = typeof budgetLine.$inferSelect & {
+  linkedActivity?: {
+    id: string
+    name: string
+    cost: string | null
+    category: string | null
+  } | null
 }
 
 function parseDate(value: unknown, field: string): Date | null {
@@ -65,36 +58,12 @@ function requireDate(value: unknown, field: string): Date {
   return d
 }
 
-function serializeActivity(activity: ActivityRow) {
-  return {
-    ...activity,
-    cost: activity.cost != null ? activity.cost.toString() : null,
-  }
+function amountToString(value: string | null | undefined): string | null {
+  if (value == null) return null
+  return value
 }
 
-type HotelRow = {
-  id: string
-  stopId: string
-  name: string
-  address: string | null
-  checkIn: Date | null
-  checkOut: Date | null
-  nightlyRate: Prisma.Decimal | null
-  nights: number | null
-  notes: string | null
-  bookingUrl: string | null
-  createdAt: Date
-  updatedAt: Date
-}
-
-function serializeHotel(hotel: HotelRow) {
-  return {
-    ...hotel,
-    nightlyRate: hotel.nightlyRate != null ? hotel.nightlyRate.toString() : null,
-  }
-}
-
-function parseOptionalAmount(value: unknown, field: string): Prisma.Decimal | null {
+function parseOptionalAmount(value: unknown, field: string): string | null {
   if (value === undefined || value === null || value === '') return null
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) {
@@ -102,7 +71,20 @@ function parseOptionalAmount(value: unknown, field: string): Prisma.Decimal | nu
       status: 400,
     })
   }
-  return new Prisma.Decimal(value as string | number)
+  return String(value)
+}
+
+function parseAmount(value: unknown, field = 'amount'): string {
+  if (value === undefined || value === null || value === '') {
+    throw Object.assign(new Error(`${field} is required`), { status: 400 })
+  }
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) {
+    throw Object.assign(new Error(`${field} must be a non-negative number`), {
+      status: 400,
+    })
+  }
+  return String(value)
 }
 
 function parseOptionalNights(value: unknown): number | null {
@@ -116,34 +98,35 @@ function parseOptionalNights(value: unknown): number | null {
   return n
 }
 
-function lodgingAmountFromHotel(hotel: {
-  nightlyRate: Prisma.Decimal | null
+function decimalToFixed(value: string | number): string {
+  return Number(value).toFixed(2)
+}
+
+function lodgingAmountFromHotel(h: {
+  nightlyRate: string | null
   nights: number | null
-}): Prisma.Decimal {
-  if (hotel.nightlyRate == null) {
+}): string {
+  if (h.nightlyRate == null) {
     throw Object.assign(new Error('nightlyRate is required to add lodging to budget'), {
       status: 400,
     })
   }
-  if (hotel.nights == null) return hotel.nightlyRate
-  return hotel.nightlyRate.mul(hotel.nights)
+  if (h.nights == null) return h.nightlyRate
+  return (Number(h.nightlyRate) * h.nights).toFixed(2)
 }
 
-type BudgetLineRow = {
-  id: string
-  tripId: string
-  category: string
-  label: string
-  amount: Prisma.Decimal
-  linkedActivityId: string | null
-  createdAt: Date
-  updatedAt: Date
-  linkedActivity?: {
-    id: string
-    name: string
-    cost: Prisma.Decimal | null
-    category: string | null
-  } | null
+function serializeActivity(a: ActivityRow) {
+  return {
+    ...a,
+    cost: amountToString(a.cost),
+  }
+}
+
+function serializeHotel(h: HotelRow) {
+  return {
+    ...h,
+    nightlyRate: amountToString(h.nightlyRate),
+  }
 }
 
 function serializeBudgetLine(line: BudgetLineRow) {
@@ -152,7 +135,7 @@ function serializeBudgetLine(line: BudgetLineRow) {
     tripId: line.tripId,
     category: line.category,
     label: line.label,
-    amount: line.amount.toString(),
+    amount: String(line.amount),
     linkedActivityId: line.linkedActivityId,
     createdAt: line.createdAt,
     updatedAt: line.updatedAt,
@@ -160,60 +143,20 @@ function serializeBudgetLine(line: BudgetLineRow) {
       ? {
           id: line.linkedActivity.id,
           name: line.linkedActivity.name,
-          cost:
-            line.linkedActivity.cost != null
-              ? line.linkedActivity.cost.toString()
-              : null,
+          cost: amountToString(line.linkedActivity.cost),
           category: line.linkedActivity.category,
         }
       : null,
   }
 }
 
-function parseAmount(value: unknown, field = 'amount'): Prisma.Decimal {
-  if (value === undefined || value === null || value === '') {
-    throw Object.assign(new Error(`${field} is required`), { status: 400 })
-  }
-  const n = Number(value)
-  if (!Number.isFinite(n) || n < 0) {
-    throw Object.assign(new Error(`${field} must be a non-negative number`), {
-      status: 400,
-    })
-  }
-  return new Prisma.Decimal(value as string | number)
-}
-
-function decimalToFixed(value: Prisma.Decimal | number): string {
-  return new Prisma.Decimal(value).toFixed(2)
-}
-
-async function assertActivityOnTrip(
-  prisma: PrismaClient,
-  tripId: string,
-  activityId: string,
-) {
-  const activity = await prisma.activity.findFirst({
-    where: {
-      id: activityId,
-      stop: { tripId },
-    },
-  })
-  if (!activity) {
-    throw Object.assign(
-      new Error('linkedActivityId must belong to an activity on this trip'),
-      { status: 400 },
-    )
-  }
-  return activity
-}
-
-function serializeTrip(trip: {
+function serializeTrip(t: {
   id: string
   userId: string
   title: string
   startDate: Date
   endDate: Date
-  totalBudget: Prisma.Decimal
+  totalBudget: string
   currency: string
   interests: string[]
   status: string
@@ -234,31 +177,53 @@ function serializeTrip(trip: {
   }>
 }) {
   return {
-    ...trip,
-    totalBudget: trip.totalBudget.toString(),
-    stops: trip.stops?.map((stop) => ({
-      ...stop,
-      activities: (stop.activities ?? []).map(serializeActivity),
-      hotels: (stop.hotels ?? []).map(serializeHotel),
+    ...t,
+    totalBudget: String(t.totalBudget),
+    stops: t.stops?.map((s) => ({
+      ...s,
+      activities: (s.activities ?? []).map(serializeActivity),
+      hotels: (s.hotels ?? []).map(serializeHotel),
     })),
   }
 }
 
-export function tripsRouter(prisma: PrismaClient) {
+async function loadTripWithDetails(tripId: string, userId: string) {
+  return db.query.trip.findFirst({
+    where: and(eq(trip.id, tripId), eq(trip.userId, userId)),
+    with: {
+      stops: {
+        orderBy: [asc(stop.order)],
+        with: {
+          activities: { orderBy: [asc(activity.order)] },
+          hotels: { orderBy: [asc(hotel.createdAt)] },
+        },
+      },
+    },
+  })
+}
+
+async function assertActivityOnTrip(tripId: string, activityId: string) {
+  const act = await db.query.activity.findFirst({
+    where: eq(activity.id, activityId),
+    with: { stop: true },
+  })
+  if (!act || act.stop.tripId !== tripId) {
+    throw Object.assign(
+      new Error('linkedActivityId must belong to an activity on this trip'),
+      { status: 400 },
+    )
+  }
+  return act
+}
+
+export function tripsRouter() {
   const router = Router()
 
-  // POST /api/trips — create trip (optional stops)
-  router.post('/api/trips', requireAuth(), async (req, res) => {
+  router.post('/api/trips', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
-        return
-      }
-
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found. Sync auth first.' })
         return
       }
 
@@ -303,40 +268,41 @@ export function tripsRouter(prisma: PrismaClient) {
         ? interests.map((i) => String(i).trim()).filter(Boolean)
         : []
 
-      const stopCreates =
-        Array.isArray(stops) && stops.length > 0
-          ? stops
-              .filter((s) => s.city?.trim())
-              .map((s, idx) => ({
-                city: s.city.trim(),
-                country: s.country?.trim() || null,
-                order: typeof s.order === 'number' ? s.order : idx,
-                arrivalDate: parseDate(s.arrivalDate, 'arrivalDate'),
-                departureDate: parseDate(s.departureDate, 'departureDate'),
-              }))
-          : []
-
-      const trip = await prisma.trip.create({
-        data: {
-          userId: user.id,
-          title: title.trim(),
-          startDate: start,
-          endDate: end,
-          totalBudget,
-          currency: currency?.trim() || 'USD',
-          interests: interestList,
-          status: tripStatus,
-          ...(stopCreates.length > 0 && {
-            stops: { create: stopCreates },
-          }),
-        },
-        include: tripInclude,
+      const tripId = randomUUID()
+      await db.insert(trip).values({
+        id: tripId,
+        userId,
+        title: title.trim(),
+        startDate: start,
+        endDate: end,
+        totalBudget: String(totalBudget),
+        currency: currency?.trim() || 'USD',
+        interests: interestList,
+        status: tripStatus,
       })
 
-      res.status(201).json({ trip: serializeTrip(trip) })
+      if (Array.isArray(stops) && stops.length > 0) {
+        const stopRows = stops
+          .filter((s) => s.city?.trim())
+          .map((s, idx) => ({
+            id: randomUUID(),
+            tripId,
+            city: s.city.trim(),
+            country: s.country?.trim() || null,
+            order: typeof s.order === 'number' ? s.order : idx,
+            arrivalDate: parseDate(s.arrivalDate, 'arrivalDate'),
+            departureDate: parseDate(s.departureDate, 'departureDate'),
+          }))
+        if (stopRows.length > 0) {
+          await db.insert(stop).values(stopRows)
+        }
+      }
+
+      const created = await loadTripWithDetails(tripId, userId)
+      res.status(201).json({ trip: serializeTrip(created!) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -345,25 +311,26 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // GET /api/trips — list current user's trips
-  router.get('/api/trips', requireAuth(), async (req, res) => {
+  router.get('/api/trips', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trips = await prisma.trip.findMany({
-        where: { userId: user.id },
-        include: tripInclude,
-        orderBy: { startDate: 'asc' },
+      const trips = await db.query.trip.findMany({
+        where: eq(trip.userId, userId),
+        orderBy: [asc(trip.startDate)],
+        with: {
+          stops: {
+            orderBy: [asc(stop.order)],
+            with: {
+              activities: { orderBy: [asc(activity.order)] },
+              hotels: { orderBy: [asc(hotel.createdAt)] },
+            },
+          },
+        },
       })
 
       res.json({ trips: trips.map(serializeTrip) })
@@ -373,55 +340,37 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // GET /api/trips/:id — get trip + stops (owner only)
-  router.get('/api/trips/:id', requireAuth(), async (req, res) => {
+  router.get('/api/trips/:id', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: tripInclude,
-      })
-
-      if (!trip) {
+      const found = await loadTripWithDetails(req.params.id, userId)
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      res.json({ trip: serializeTrip(trip) })
+      res.json({ trip: serializeTrip(found) })
     } catch (err) {
       console.error('[trips/:id GET]', err)
       res.status(500).json({ error: 'Failed to fetch trip' })
     }
   })
 
-  // PATCH /api/trips/:id — update trip metadata
-  router.patch('/api/trips/:id', requireAuth(), async (req, res) => {
+  router.patch('/api/trips/:id', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const existing = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const existing = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
       if (!existing) {
         res.status(404).json({ error: 'Trip not found' })
@@ -435,7 +384,7 @@ export function tripsRouter(prisma: PrismaClient) {
         totalBudget,
         currency,
         interests,
-        status,
+        status: tripStatus,
       } = req.body as {
         title?: string
         startDate?: string
@@ -446,49 +395,45 @@ export function tripsRouter(prisma: PrismaClient) {
         status?: string
       }
 
-      const data: Prisma.TripUpdateInput = {}
+      const patch: Partial<typeof trip.$inferInsert> = {}
 
       if (title !== undefined) {
         if (!title.trim()) {
           res.status(400).json({ error: 'title cannot be empty' })
           return
         }
-        data.title = title.trim()
+        patch.title = title.trim()
       }
-      if (startDate !== undefined) data.startDate = requireDate(startDate, 'startDate')
-      if (endDate !== undefined) data.endDate = requireDate(endDate, 'endDate')
-      if (totalBudget !== undefined) data.totalBudget = totalBudget
-      if (currency !== undefined) data.currency = currency.trim() || existing.currency
+      if (startDate !== undefined) patch.startDate = requireDate(startDate, 'startDate')
+      if (endDate !== undefined) patch.endDate = requireDate(endDate, 'endDate')
+      if (totalBudget !== undefined) patch.totalBudget = String(totalBudget)
+      if (currency !== undefined) patch.currency = currency.trim() || existing.currency
       if (interests !== undefined) {
-        data.interests = Array.isArray(interests)
+        patch.interests = Array.isArray(interests)
           ? interests.map((i) => String(i).trim()).filter(Boolean)
           : []
       }
-      if (status !== undefined) {
-        if (!VALID_STATUSES.has(status)) {
+      if (tripStatus !== undefined) {
+        if (!VALID_STATUSES.has(tripStatus)) {
           res.status(400).json({ error: 'Invalid status' })
           return
         }
-        data.status = status
+        patch.status = tripStatus
       }
 
-      const nextStart = (data.startDate as Date | undefined) ?? existing.startDate
-      const nextEnd = (data.endDate as Date | undefined) ?? existing.endDate
+      const nextStart = (patch.startDate as Date | undefined) ?? existing.startDate
+      const nextEnd = (patch.endDate as Date | undefined) ?? existing.endDate
       if (nextEnd < nextStart) {
         res.status(400).json({ error: 'endDate must be on or after startDate' })
         return
       }
 
-      const trip = await prisma.trip.update({
-        where: { id: existing.id },
-        data,
-        include: tripInclude,
-      })
-
-      res.json({ trip: serializeTrip(trip) })
+      await db.update(trip).set(patch).where(eq(trip.id, existing.id))
+      const updated = await loadTripWithDetails(existing.id, userId)
+      res.json({ trip: serializeTrip(updated!) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -497,30 +442,23 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // DELETE /api/trips/:id
-  router.delete('/api/trips/:id', requireAuth(), async (req, res) => {
+  router.delete('/api/trips/:id', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const existing = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const existing = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
       if (!existing) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      await prisma.trip.delete({ where: { id: existing.id } })
+      await db.delete(trip).where(eq(trip.id, existing.id))
       res.json({ ok: true })
     } catch (err) {
       console.error('[trips/:id DELETE]', err)
@@ -528,26 +466,19 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // POST /api/trips/:id/stops — add stop
-  router.post('/api/trips/:id/stops', requireAuth(), async (req, res) => {
+  router.post('/api/trips/:id/stops', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: true },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: true },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
@@ -561,23 +492,25 @@ export function tripsRouter(prisma: PrismaClient) {
       const nextOrder =
         typeof order === 'number'
           ? order
-          : trip.stops.reduce((max, s) => Math.max(max, s.order), -1) + 1
+          : found.stops.reduce((max, s) => Math.max(max, s.order), -1) + 1
 
-      const stop = await prisma.stop.create({
-        data: {
-          tripId: trip.id,
+      const [created] = await db
+        .insert(stop)
+        .values({
+          id: randomUUID(),
+          tripId: found.id,
           city: city.trim(),
           country: country?.trim() || null,
           order: nextOrder,
           arrivalDate: parseDate(arrivalDate, 'arrivalDate'),
           departureDate: parseDate(departureDate, 'departureDate'),
-        },
-      })
+        })
+        .returning()
 
-      res.status(201).json({ stop })
+      res.status(201).json({ stop: created })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -586,26 +519,19 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // PATCH /api/trips/:id/stops/reorder — reorder stops
-  router.patch('/api/trips/:id/stops/reorder', requireAuth(), async (req, res) => {
+  router.patch('/api/trips/:id/stops/reorder', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: true },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: true },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
@@ -619,7 +545,7 @@ export function tripsRouter(prisma: PrismaClient) {
         return
       }
 
-      const ownedIds = new Set(trip.stops.map((s) => s.id))
+      const ownedIds = new Set(found.stops.map((s) => s.id))
       for (const item of orderList) {
         if (!item.id || typeof item.order !== 'number') {
           res.status(400).json({ error: 'Each item needs id and numeric order' })
@@ -631,20 +557,13 @@ export function tripsRouter(prisma: PrismaClient) {
         }
       }
 
-      await prisma.$transaction(
-        orderList.map((item) =>
-          prisma.stop.update({
-            where: { id: item.id },
-            data: { order: item.order },
-          }),
-        ),
-      )
-
-      const updated = await prisma.trip.findUnique({
-        where: { id: trip.id },
-        include: tripInclude,
+      await db.transaction(async (tx) => {
+        for (const item of orderList) {
+          await tx.update(stop).set({ order: item.order }).where(eq(stop.id, item.id))
+        }
       })
 
+      const updated = await loadTripWithDetails(found.id, userId)
       res.json({ trip: serializeTrip(updated!) })
     } catch (err) {
       console.error('[trips/:id/stops/reorder PATCH]', err)
@@ -652,31 +571,24 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // PATCH /api/trips/:id/stops/:stopId — update stop
-  router.patch('/api/trips/:id/stops/:stopId', requireAuth(), async (req, res) => {
+  router.patch('/api/trips/:id/stops/:stopId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const existing = await prisma.stop.findFirst({
-        where: { id: req.params.stopId, tripId: trip.id },
+      const existing = await db.query.stop.findFirst({
+        where: and(eq(stop.id, req.params.stopId), eq(stop.tripId, found.id)),
       })
       if (!existing) {
         res.status(404).json({ error: 'Stop not found' })
@@ -687,28 +599,31 @@ export function tripsRouter(prisma: PrismaClient) {
         order?: number
       }
 
-      const data: Prisma.StopUpdateInput = {}
+      const patch: Partial<typeof stop.$inferInsert> = {}
       if (city !== undefined) {
         if (!city.trim()) {
           res.status(400).json({ error: 'city cannot be empty' })
           return
         }
-        data.city = city.trim()
+        patch.city = city.trim()
       }
-      if (country !== undefined) data.country = country?.trim() || null
-      if (order !== undefined) data.order = order
-      if (arrivalDate !== undefined) data.arrivalDate = parseDate(arrivalDate, 'arrivalDate')
-      if (departureDate !== undefined) data.departureDate = parseDate(departureDate, 'departureDate')
+      if (country !== undefined) patch.country = country?.trim() || null
+      if (order !== undefined) patch.order = order
+      if (arrivalDate !== undefined) patch.arrivalDate = parseDate(arrivalDate, 'arrivalDate')
+      if (departureDate !== undefined) {
+        patch.departureDate = parseDate(departureDate, 'departureDate')
+      }
 
-      const stop = await prisma.stop.update({
-        where: { id: existing.id },
-        data,
-      })
+      const [updated] = await db
+        .update(stop)
+        .set(patch)
+        .where(eq(stop.id, existing.id))
+        .returning()
 
-      res.json({ stop })
+      res.json({ stop: updated })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -717,38 +632,31 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // DELETE /api/trips/:id/stops/:stopId
-  router.delete('/api/trips/:id/stops/:stopId', requireAuth(), async (req, res) => {
+  router.delete('/api/trips/:id/stops/:stopId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const existing = await prisma.stop.findFirst({
-        where: { id: req.params.stopId, tripId: trip.id },
+      const existing = await db.query.stop.findFirst({
+        where: and(eq(stop.id, req.params.stopId), eq(stop.tripId, found.id)),
       })
       if (!existing) {
         res.status(404).json({ error: 'Stop not found' })
         return
       }
 
-      await prisma.stop.delete({ where: { id: existing.id } })
+      await db.delete(stop).where(eq(stop.id, existing.id))
       res.json({ ok: true })
     } catch (err) {
       console.error('[trips/:id/stops/:stopId DELETE]', err)
@@ -756,34 +664,27 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // POST /api/trips/:id/stops/:stopId/activities — add activity to a stop
-  router.post('/api/trips/:id/stops/:stopId/activities', requireAuth(), async (req, res) => {
+  router.post('/api/trips/:id/stops/:stopId/activities', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const stop = await prisma.stop.findFirst({
-        where: { id: req.params.stopId, tripId: trip.id },
-        include: { activities: true },
+      const stopRow = await db.query.stop.findFirst({
+        where: and(eq(stop.id, req.params.stopId), eq(stop.tripId, found.id)),
+        with: { activities: true },
       })
-      if (!stop) {
+      if (!stopRow) {
         res.status(404).json({ error: 'Stop not found' })
         return
       }
@@ -806,59 +707,55 @@ export function tripsRouter(prisma: PrismaClient) {
       const nextOrder =
         typeof order === 'number'
           ? order
-          : stop.activities.reduce((max, a) => Math.max(max, a.order), -1) + 1
+          : stopRow.activities.reduce((max, a) => Math.max(max, a.order), -1) + 1
 
-      const activity = await prisma.activity.create({
-        data: {
-          stopId: stop.id,
+      const [created] = await db
+        .insert(activity)
+        .values({
+          id: randomUUID(),
+          stopId: stopRow.id,
           name: name.trim(),
           category: category?.trim() || null,
-          cost: cost === '' || cost === null || cost === undefined ? null : cost,
+          cost:
+            cost === '' || cost === null || cost === undefined ? null : String(cost),
           startTime: startTime?.trim() || null,
           endTime: endTime?.trim() || null,
           notes: notes?.trim() || null,
           order: nextOrder,
-        },
-      })
+        })
+        .returning()
 
-      res.status(201).json({ activity: serializeActivity(activity) })
+      res.status(201).json({ activity: serializeActivity(created) })
     } catch (err) {
       console.error('[trips/:id/stops/:stopId/activities POST]', err)
       res.status(500).json({ error: 'Failed to add activity' })
     }
   })
 
-  // PATCH /api/trips/:id/stops/:stopId/activities/reorder — reorder activities within a stop
   router.patch(
     '/api/trips/:id/stops/:stopId/activities/reorder',
-    requireAuth(),
+    requireAuth,
     async (req, res) => {
       try {
-        const { userId: externalId } = getAuth(req)
-        if (!externalId) {
+        const userId = getAuthUserId(req)
+        if (!userId) {
           res.status(401).json({ error: 'Unauthorized' })
           return
         }
 
-        const user = await resolveDbUser(prisma, externalId)
-        if (!user) {
-          res.status(404).json({ error: 'User not found' })
-          return
-        }
-
-        const trip = await prisma.trip.findFirst({
-          where: { id: req.params.id, userId: user.id },
+        const found = await db.query.trip.findFirst({
+          where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
         })
-        if (!trip) {
+        if (!found) {
           res.status(404).json({ error: 'Trip not found' })
           return
         }
 
-        const stop = await prisma.stop.findFirst({
-          where: { id: req.params.stopId, tripId: trip.id },
-          include: { activities: true },
+        const stopRow = await db.query.stop.findFirst({
+          where: and(eq(stop.id, req.params.stopId), eq(stop.tripId, found.id)),
+          with: { activities: true },
         })
-        if (!stop) {
+        if (!stopRow) {
           res.status(404).json({ error: 'Stop not found' })
           return
         }
@@ -872,7 +769,7 @@ export function tripsRouter(prisma: PrismaClient) {
           return
         }
 
-        const ownedIds = new Set(stop.activities.map((a) => a.id))
+        const ownedIds = new Set(stopRow.activities.map((a) => a.id))
         for (const item of orderList) {
           if (!item.id || typeof item.order !== 'number') {
             res.status(400).json({ error: 'Each item needs id and numeric order' })
@@ -886,20 +783,16 @@ export function tripsRouter(prisma: PrismaClient) {
           }
         }
 
-        await prisma.$transaction(
-          orderList.map((item) =>
-            prisma.activity.update({
-              where: { id: item.id },
-              data: { order: item.order },
-            }),
-          ),
-        )
-
-        const updated = await prisma.trip.findUnique({
-          where: { id: trip.id },
-          include: tripInclude,
+        await db.transaction(async (tx) => {
+          for (const item of orderList) {
+            await tx
+              .update(activity)
+              .set({ order: item.order })
+              .where(eq(activity.id, item.id))
+          }
         })
 
+        const updated = await loadTripWithDetails(found.id, userId)
         res.json({ trip: serializeTrip(updated!) })
       } catch (err) {
         console.error('[trips/:id/stops/:stopId/activities/reorder PATCH]', err)
@@ -908,79 +801,70 @@ export function tripsRouter(prisma: PrismaClient) {
     },
   )
 
-  /**
-   * POST /api/trips/:id/generate — AI itinerary draft (owner only).
-   * Replace strategy: deletes ALL existing activities on every stop for this trip,
-   * then inserts the newly generated activities (hotels stored as category "hotel").
-   */
-  router.post('/api/trips/:id/generate', requireAuth(), async (req, res) => {
+  router.post('/api/trips/:id/generate', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: { orderBy: { order: 'asc' } } },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: { orderBy: [asc(stop.order)] } },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
-      if (trip.stops.length === 0) {
+      if (found.stops.length === 0) {
         res.status(400).json({ error: 'Add at least one stop before generating a plan' })
         return
       }
 
       const { prompt, plan, rawJson } = await generateTripPlan({
-        id: trip.id,
-        title: trip.title,
-        startDate: trip.startDate,
-        endDate: trip.endDate,
-        totalBudget: trip.totalBudget.toString(),
-        currency: trip.currency,
-        interests: trip.interests,
-        stops: trip.stops,
+        id: found.id,
+        title: found.title,
+        startDate: found.startDate,
+        endDate: found.endDate,
+        totalBudget: String(found.totalBudget),
+        currency: found.currency,
+        interests: found.interests,
+        stops: found.stops,
       })
 
-      const stopIds = trip.stops.map((s) => s.id)
+      const stopIds = found.stops.map((s) => s.id)
 
-      await prisma.$transaction(async (tx) => {
-        await tx.activity.deleteMany({ where: { stopId: { in: stopIds } } })
+      await db.transaction(async (tx) => {
+        if (stopIds.length > 0) {
+          await tx.delete(activity).where(inArray(activity.stopId, stopIds))
+        }
 
-        await tx.aiGeneration.create({
-          data: {
-            tripId: trip.id,
-            prompt,
-            rawJson: rawJson as Prisma.InputJsonValue,
-          },
+        await tx.insert(aiGeneration).values({
+          id: randomUUID(),
+          tripId: found.id,
+          prompt,
+          rawJson,
         })
 
         for (const planned of plan.stops) {
-          const rows: Prisma.ActivityCreateManyInput[] = []
+          const rows: (typeof activity.$inferInsert)[] = []
 
           if (planned.hotelSuggestion?.name) {
             const nightly = planned.hotelSuggestion.estimatedNightlyCost
             const hotelNotes = [
-              nightly != null ? `Est. ${nightly} ${trip.currency}/night` : null,
+              nightly != null ? `Est. ${nightly} ${found.currency}/night` : null,
               planned.hotelSuggestion.notes,
             ]
               .filter(Boolean)
               .join(' · ')
 
             rows.push({
+              id: randomUUID(),
               stopId: planned.stopId,
               name: planned.hotelSuggestion.name,
               category: 'hotel',
-              cost: nightly ?? null,
+              cost: nightly != null ? String(nightly) : null,
               notes: hotelNotes || null,
               order: 0,
             })
@@ -988,10 +872,11 @@ export function tripsRouter(prisma: PrismaClient) {
 
           planned.activities.forEach((act, idx) => {
             rows.push({
+              id: randomUUID(),
               stopId: planned.stopId,
               name: act.name,
               category: act.category ?? null,
-              cost: act.cost ?? null,
+              cost: act.cost != null ? String(act.cost) : null,
               startTime: act.startTime ?? null,
               endTime: act.endTime ?? null,
               notes: act.notes ?? null,
@@ -1000,31 +885,24 @@ export function tripsRouter(prisma: PrismaClient) {
           })
 
           if (rows.length > 0) {
-            await tx.activity.createMany({ data: rows })
+            await tx.insert(activity).values(rows)
           }
         }
 
-        if (trip.status === 'draft') {
-          await tx.trip.update({
-            where: { id: trip.id },
-            data: { status: 'planning' },
-          })
+        if (found.status === 'draft') {
+          await tx.update(trip).set({ status: 'planning' }).where(eq(trip.id, found.id))
         }
       })
 
-      const updated = await prisma.trip.findUnique({
-        where: { id: trip.id },
-        include: tripInclude,
-      })
-
+      const updated = await loadTripWithDetails(found.id, userId)
       res.json({
         trip: serializeTrip(updated!),
         budgetHint: plan.budgetHint ?? null,
       })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400 || status === 503 || status === 502) {
-        res.status(status).json({ error: (err as Error).message })
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400 || statusCode === 503 || statusCode === 502) {
+        res.status(statusCode).json({ error: (err as Error).message })
         return
       }
       console.error('[trips/:id/generate POST]', err)
@@ -1032,33 +910,26 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // PATCH /api/trips/:id/activities/:activityId — edit activity
-  router.patch('/api/trips/:id/activities/:activityId', requireAuth(), async (req, res) => {
+  router.patch('/api/trips/:id/activities/:activityId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: true },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: true },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const stopIds = new Set(trip.stops.map((s) => s.id))
-      const existing = await prisma.activity.findFirst({
-        where: { id: req.params.activityId },
+      const stopIds = new Set(found.stops.map((s) => s.id))
+      const existing = await db.query.activity.findFirst({
+        where: eq(activity.id, req.params.activityId),
       })
       if (!existing || !stopIds.has(existing.stopId)) {
         res.status(404).json({ error: 'Activity not found' })
@@ -1075,30 +946,31 @@ export function tripsRouter(prisma: PrismaClient) {
         order?: number
       }
 
-      const data: Prisma.ActivityUpdateInput = {}
+      const patch: Partial<typeof activity.$inferInsert> = {}
       if (name !== undefined) {
         if (!name.trim()) {
           res.status(400).json({ error: 'name cannot be empty' })
           return
         }
-        data.name = name.trim()
+        patch.name = name.trim()
       }
-      if (category !== undefined) data.category = category?.trim() || null
-      if (cost !== undefined) data.cost = cost === '' || cost === null ? null : cost
-      if (startTime !== undefined) data.startTime = startTime?.trim() || null
-      if (endTime !== undefined) data.endTime = endTime?.trim() || null
-      if (notes !== undefined) data.notes = notes?.trim() || null
-      if (order !== undefined) data.order = order
+      if (category !== undefined) patch.category = category?.trim() || null
+      if (cost !== undefined) patch.cost = cost === '' || cost === null ? null : String(cost)
+      if (startTime !== undefined) patch.startTime = startTime?.trim() || null
+      if (endTime !== undefined) patch.endTime = endTime?.trim() || null
+      if (notes !== undefined) patch.notes = notes?.trim() || null
+      if (order !== undefined) patch.order = order
 
-      const activity = await prisma.activity.update({
-        where: { id: existing.id },
-        data,
-      })
+      const [updated] = await db
+        .update(activity)
+        .set(patch)
+        .where(eq(activity.id, existing.id))
+        .returning()
 
-      res.json({ activity: serializeActivity(activity) })
+      res.json({ activity: serializeActivity(updated) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -1107,40 +979,33 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // DELETE /api/trips/:id/activities/:activityId
-  router.delete('/api/trips/:id/activities/:activityId', requireAuth(), async (req, res) => {
+  router.delete('/api/trips/:id/activities/:activityId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: true },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: true },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const stopIds = new Set(trip.stops.map((s) => s.id))
-      const existing = await prisma.activity.findFirst({
-        where: { id: req.params.activityId },
+      const stopIds = new Set(found.stops.map((s) => s.id))
+      const existing = await db.query.activity.findFirst({
+        where: eq(activity.id, req.params.activityId),
       })
       if (!existing || !stopIds.has(existing.stopId)) {
         res.status(404).json({ error: 'Activity not found' })
         return
       }
 
-      await prisma.activity.delete({ where: { id: existing.id } })
+      await db.delete(activity).where(eq(activity.id, existing.id))
       res.json({ ok: true })
     } catch (err) {
       console.error('[trips/:id/activities/:activityId DELETE]', err)
@@ -1148,41 +1013,34 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // GET /api/trips/:id/budget — lines, category totals, remaining, activity cost rollup
-  router.get('/api/trips/:id/budget', requireAuth(), async (req, res) => {
+  router.get('/api/trips/:id/budget', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: {
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: {
           budgetLines: {
-            orderBy: { createdAt: 'asc' },
-            include: {
+            orderBy: [asc(budgetLine.createdAt)],
+            with: {
               linkedActivity: {
-                select: { id: true, name: true, cost: true, category: true },
+                columns: { id: true, name: true, cost: true, category: true },
               },
             },
           },
           stops: {
-            orderBy: { order: 'asc' },
-            include: {
-              activities: { orderBy: { order: 'asc' } },
+            orderBy: [asc(stop.order)],
+            with: {
+              activities: { orderBy: [asc(activity.order)] },
             },
           },
         },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
@@ -1194,18 +1052,18 @@ export function tripsRouter(prisma: PrismaClient) {
         activities: '0.00',
         other: '0.00',
       }
-      let allocated = new Prisma.Decimal(0)
-      for (const line of trip.budgetLines) {
-        allocated = allocated.add(line.amount)
+      let allocated = 0
+      for (const line of found.budgetLines) {
+        allocated += Number(line.amount)
         const key = BUDGET_CATEGORIES.has(line.category) ? line.category : 'other'
         totalsByCategory[key] = decimalToFixed(
-          new Prisma.Decimal(totalsByCategory[key]).add(line.amount),
+          Number(totalsByCategory[key]) + Number(line.amount),
         )
       }
 
-      const remaining = trip.totalBudget.sub(allocated)
+      const remaining = Number(found.totalBudget) - allocated
 
-      let plannedFromActivities = new Prisma.Decimal(0)
+      let plannedFromActivities = 0
       const activityCosts: Array<{
         id: string
         stopId: string
@@ -1215,31 +1073,31 @@ export function tripsRouter(prisma: PrismaClient) {
         cost: string
       }> = []
 
-      for (const stop of trip.stops) {
-        for (const activity of stop.activities) {
-          if (activity.cost == null) continue
-          plannedFromActivities = plannedFromActivities.add(activity.cost)
+      for (const s of found.stops) {
+        for (const a of s.activities) {
+          if (a.cost == null) continue
+          plannedFromActivities += Number(a.cost)
           activityCosts.push({
-            id: activity.id,
-            stopId: stop.id,
-            stopCity: stop.city,
-            name: activity.name,
-            category: activity.category,
-            cost: activity.cost.toString(),
+            id: a.id,
+            stopId: s.id,
+            stopCity: s.city,
+            name: a.name,
+            category: a.category,
+            cost: String(a.cost),
           })
         }
       }
 
       res.json({
-        tripId: trip.id,
-        title: trip.title,
-        currency: trip.currency,
-        totalBudget: trip.totalBudget.toString(),
+        tripId: found.id,
+        title: found.title,
+        currency: found.currency,
+        totalBudget: String(found.totalBudget),
         allocated: decimalToFixed(allocated),
         remaining: decimalToFixed(remaining),
         totalsByCategory,
         plannedFromActivities: decimalToFixed(plannedFromActivities),
-        lines: trip.budgetLines.map(serializeBudgetLine),
+        lines: found.budgetLines.map(serializeBudgetLine),
         activityCosts,
       })
     } catch (err) {
@@ -1248,25 +1106,18 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // POST /api/trips/:id/budget-lines — create budget line
-  router.post('/api/trips/:id/budget-lines', requireAuth(), async (req, res) => {
+  router.post('/api/trips/:id/budget-lines', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
@@ -1292,29 +1143,35 @@ export function tripsRouter(prisma: PrismaClient) {
       const parsedAmount = parseAmount(amount)
       let linkedId: string | null = null
       if (linkedActivityId) {
-        await assertActivityOnTrip(prisma, trip.id, linkedActivityId)
+        await assertActivityOnTrip(found.id, linkedActivityId)
         linkedId = linkedActivityId
       }
 
-      const line = await prisma.budgetLine.create({
-        data: {
-          tripId: trip.id,
+      const [created] = await db
+        .insert(budgetLine)
+        .values({
+          id: randomUUID(),
+          tripId: found.id,
           category: category.trim(),
           label: label.trim(),
           amount: parsedAmount,
           linkedActivityId: linkedId,
-        },
-        include: {
+        })
+        .returning()
+
+      const withLink = await db.query.budgetLine.findFirst({
+        where: eq(budgetLine.id, created.id),
+        with: {
           linkedActivity: {
-            select: { id: true, name: true, cost: true, category: true },
+            columns: { id: true, name: true, cost: true, category: true },
           },
         },
       })
 
-      res.status(201).json({ line: serializeBudgetLine(line) })
+      res.status(201).json({ line: serializeBudgetLine(withLink!) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -1323,31 +1180,24 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // PATCH /api/trips/:id/budget-lines/:lineId — update budget line
-  router.patch('/api/trips/:id/budget-lines/:lineId', requireAuth(), async (req, res) => {
+  router.patch('/api/trips/:id/budget-lines/:lineId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const existing = await prisma.budgetLine.findFirst({
-        where: { id: req.params.lineId, tripId: trip.id },
+      const existing = await db.query.budgetLine.findFirst({
+        where: and(eq(budgetLine.id, req.params.lineId), eq(budgetLine.tripId, found.id)),
       })
       if (!existing) {
         res.status(404).json({ error: 'Budget line not found' })
@@ -1361,7 +1211,7 @@ export function tripsRouter(prisma: PrismaClient) {
         linkedActivityId?: string | null
       }
 
-      const data: Prisma.BudgetLineUpdateInput = {}
+      const patch: Partial<typeof budgetLine.$inferInsert> = {}
       if (category !== undefined) {
         if (!category.trim() || !BUDGET_CATEGORIES.has(category.trim())) {
           res.status(400).json({
@@ -1369,41 +1219,42 @@ export function tripsRouter(prisma: PrismaClient) {
           })
           return
         }
-        data.category = category.trim()
+        patch.category = category.trim()
       }
       if (label !== undefined) {
         if (!label.trim()) {
           res.status(400).json({ error: 'label cannot be empty' })
           return
         }
-        data.label = label.trim()
+        patch.label = label.trim()
       }
       if (amount !== undefined) {
-        data.amount = parseAmount(amount)
+        patch.amount = parseAmount(amount)
       }
       if (linkedActivityId !== undefined) {
         if (linkedActivityId === null || linkedActivityId === '') {
-          data.linkedActivity = { disconnect: true }
+          patch.linkedActivityId = null
         } else {
-          await assertActivityOnTrip(prisma, trip.id, linkedActivityId)
-          data.linkedActivity = { connect: { id: linkedActivityId } }
+          await assertActivityOnTrip(found.id, linkedActivityId)
+          patch.linkedActivityId = linkedActivityId
         }
       }
 
-      const line = await prisma.budgetLine.update({
-        where: { id: existing.id },
-        data,
-        include: {
+      await db.update(budgetLine).set(patch).where(eq(budgetLine.id, existing.id))
+
+      const withLink = await db.query.budgetLine.findFirst({
+        where: eq(budgetLine.id, existing.id),
+        with: {
           linkedActivity: {
-            select: { id: true, name: true, cost: true, category: true },
+            columns: { id: true, name: true, cost: true, category: true },
           },
         },
       })
 
-      res.json({ line: serializeBudgetLine(line) })
+      res.json({ line: serializeBudgetLine(withLink!) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -1412,38 +1263,31 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // DELETE /api/trips/:id/budget-lines/:lineId
-  router.delete('/api/trips/:id/budget-lines/:lineId', requireAuth(), async (req, res) => {
+  router.delete('/api/trips/:id/budget-lines/:lineId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const existing = await prisma.budgetLine.findFirst({
-        where: { id: req.params.lineId, tripId: trip.id },
+      const existing = await db.query.budgetLine.findFirst({
+        where: and(eq(budgetLine.id, req.params.lineId), eq(budgetLine.tripId, found.id)),
       })
       if (!existing) {
         res.status(404).json({ error: 'Budget line not found' })
         return
       }
 
-      await prisma.budgetLine.delete({ where: { id: existing.id } })
+      await db.delete(budgetLine).where(eq(budgetLine.id, existing.id))
       res.json({ ok: true })
     } catch (err) {
       console.error('[trips/:id/budget-lines/:lineId DELETE]', err)
@@ -1451,48 +1295,41 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // GET /api/trips/:id/hotels — list hotels for a trip (via stops)
-  router.get('/api/trips/:id/hotels', requireAuth(), async (req, res) => {
+  router.get('/api/trips/:id/hotels', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: {
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: {
           stops: {
-            orderBy: { order: 'asc' },
-            include: { hotels: { orderBy: { createdAt: 'asc' } } },
+            orderBy: [asc(stop.order)],
+            with: { hotels: { orderBy: [asc(hotel.createdAt)] } },
           },
         },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const hotels = trip.stops.flatMap((stop) =>
-        stop.hotels.map((hotel) => ({
-          ...serializeHotel(hotel),
-          stopCity: stop.city,
-          stopCountry: stop.country,
-          stopOrder: stop.order,
+      const hotels = found.stops.flatMap((s) =>
+        s.hotels.map((h) => ({
+          ...serializeHotel(h),
+          stopCity: s.city,
+          stopCountry: s.country,
+          stopOrder: s.order,
         })),
       )
 
       res.json({
-        tripId: trip.id,
-        title: trip.title,
-        currency: trip.currency,
+        tripId: found.id,
+        title: found.title,
+        currency: found.currency,
         hotels,
       })
     } catch (err) {
@@ -1501,33 +1338,26 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // POST /api/trips/:id/stops/:stopId/hotels — add hotel to a stop
-  router.post('/api/trips/:id/stops/:stopId/hotels', requireAuth(), async (req, res) => {
+  router.post('/api/trips/:id/stops/:stopId/hotels', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const stop = await prisma.stop.findFirst({
-        where: { id: req.params.stopId, tripId: trip.id },
+      const stopRow = await db.query.stop.findFirst({
+        where: and(eq(stop.id, req.params.stopId), eq(stop.tripId, found.id)),
       })
-      if (!stop) {
+      if (!stopRow) {
         res.status(404).json({ error: 'Stop not found' })
         return
       }
@@ -1549,9 +1379,11 @@ export function tripsRouter(prisma: PrismaClient) {
         return
       }
 
-      const hotel = await prisma.hotel.create({
-        data: {
-          stopId: stop.id,
+      const [created] = await db
+        .insert(hotel)
+        .values({
+          id: randomUUID(),
+          stopId: stopRow.id,
           name: name.trim(),
           address: address?.trim() || null,
           checkIn: parseDate(checkIn, 'checkIn'),
@@ -1560,13 +1392,13 @@ export function tripsRouter(prisma: PrismaClient) {
           nights: parseOptionalNights(nights),
           notes: notes?.trim() || null,
           bookingUrl: bookingUrl?.trim() || null,
-        },
-      })
+        })
+        .returning()
 
-      res.status(201).json({ hotel: serializeHotel(hotel) })
+      res.status(201).json({ hotel: serializeHotel(created) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -1575,33 +1407,26 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // PATCH /api/trips/:id/hotels/:hotelId — edit hotel
-  router.patch('/api/trips/:id/hotels/:hotelId', requireAuth(), async (req, res) => {
+  router.patch('/api/trips/:id/hotels/:hotelId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: true },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: true },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const stopIds = new Set(trip.stops.map((s) => s.id))
-      const existing = await prisma.hotel.findFirst({
-        where: { id: req.params.hotelId },
+      const stopIds = new Set(found.stops.map((s) => s.id))
+      const existing = await db.query.hotel.findFirst({
+        where: eq(hotel.id, req.params.hotelId),
       })
       if (!existing || !stopIds.has(existing.stopId)) {
         res.status(404).json({ error: 'Hotel not found' })
@@ -1620,33 +1445,34 @@ export function tripsRouter(prisma: PrismaClient) {
           bookingUrl?: string | null
         }
 
-      const data: Prisma.HotelUpdateInput = {}
+      const patch: Partial<typeof hotel.$inferInsert> = {}
       if (name !== undefined) {
         if (!name.trim()) {
           res.status(400).json({ error: 'name cannot be empty' })
           return
         }
-        data.name = name.trim()
+        patch.name = name.trim()
       }
-      if (address !== undefined) data.address = address?.trim() || null
-      if (checkIn !== undefined) data.checkIn = parseDate(checkIn, 'checkIn')
-      if (checkOut !== undefined) data.checkOut = parseDate(checkOut, 'checkOut')
+      if (address !== undefined) patch.address = address?.trim() || null
+      if (checkIn !== undefined) patch.checkIn = parseDate(checkIn, 'checkIn')
+      if (checkOut !== undefined) patch.checkOut = parseDate(checkOut, 'checkOut')
       if (nightlyRate !== undefined) {
-        data.nightlyRate = parseOptionalAmount(nightlyRate, 'nightlyRate')
+        patch.nightlyRate = parseOptionalAmount(nightlyRate, 'nightlyRate')
       }
-      if (nights !== undefined) data.nights = parseOptionalNights(nights)
-      if (notes !== undefined) data.notes = notes?.trim() || null
-      if (bookingUrl !== undefined) data.bookingUrl = bookingUrl?.trim() || null
+      if (nights !== undefined) patch.nights = parseOptionalNights(nights)
+      if (notes !== undefined) patch.notes = notes?.trim() || null
+      if (bookingUrl !== undefined) patch.bookingUrl = bookingUrl?.trim() || null
 
-      const hotel = await prisma.hotel.update({
-        where: { id: existing.id },
-        data,
-      })
+      const [updated] = await db
+        .update(hotel)
+        .set(patch)
+        .where(eq(hotel.id, existing.id))
+        .returning()
 
-      res.json({ hotel: serializeHotel(hotel) })
+      res.json({ hotel: serializeHotel(updated) })
     } catch (err) {
-      const status = (err as { status?: number }).status
-      if (status === 400) {
+      const statusCode = (err as { status?: number }).status
+      if (statusCode === 400) {
         res.status(400).json({ error: (err as Error).message })
         return
       }
@@ -1655,40 +1481,33 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // DELETE /api/trips/:id/hotels/:hotelId
-  router.delete('/api/trips/:id/hotels/:hotelId', requireAuth(), async (req, res) => {
+  router.delete('/api/trips/:id/hotels/:hotelId', requireAuth, async (req, res) => {
     try {
-      const { userId: externalId } = getAuth(req)
-      if (!externalId) {
+      const userId = getAuthUserId(req)
+      if (!userId) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
 
-      const user = await resolveDbUser(prisma, externalId)
-      if (!user) {
-        res.status(404).json({ error: 'User not found' })
-        return
-      }
-
-      const trip = await prisma.trip.findFirst({
-        where: { id: req.params.id, userId: user.id },
-        include: { stops: true },
+      const found = await db.query.trip.findFirst({
+        where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+        with: { stops: true },
       })
-      if (!trip) {
+      if (!found) {
         res.status(404).json({ error: 'Trip not found' })
         return
       }
 
-      const stopIds = new Set(trip.stops.map((s) => s.id))
-      const existing = await prisma.hotel.findFirst({
-        where: { id: req.params.hotelId },
+      const stopIds = new Set(found.stops.map((s) => s.id))
+      const existing = await db.query.hotel.findFirst({
+        where: eq(hotel.id, req.params.hotelId),
       })
       if (!existing || !stopIds.has(existing.stopId)) {
         res.status(404).json({ error: 'Hotel not found' })
         return
       }
 
-      await prisma.hotel.delete({ where: { id: existing.id } })
+      await db.delete(hotel).where(eq(hotel.id, existing.id))
       res.json({ ok: true })
     } catch (err) {
       console.error('[trips/:id/hotels/:hotelId DELETE]', err)
@@ -1696,66 +1515,67 @@ export function tripsRouter(prisma: PrismaClient) {
     }
   })
 
-  // POST /api/trips/:id/hotels/:hotelId/add-to-budget — lodging BudgetLine from rate × nights
   router.post(
     '/api/trips/:id/hotels/:hotelId/add-to-budget',
-    requireAuth(),
+    requireAuth,
     async (req, res) => {
       try {
-        const { userId: externalId } = getAuth(req)
-        if (!externalId) {
+        const userId = getAuthUserId(req)
+        if (!userId) {
           res.status(401).json({ error: 'Unauthorized' })
           return
         }
 
-        const user = await resolveDbUser(prisma, externalId)
-        if (!user) {
-          res.status(404).json({ error: 'User not found' })
-          return
-        }
-
-        const trip = await prisma.trip.findFirst({
-          where: { id: req.params.id, userId: user.id },
-          include: { stops: true },
+        const found = await db.query.trip.findFirst({
+          where: and(eq(trip.id, req.params.id), eq(trip.userId, userId)),
+          with: { stops: true },
         })
-        if (!trip) {
+        if (!found) {
           res.status(404).json({ error: 'Trip not found' })
           return
         }
 
-        const stopIds = new Set(trip.stops.map((s) => s.id))
-        const hotel = await prisma.hotel.findFirst({
-          where: { id: req.params.hotelId },
-          include: { stop: { select: { city: true } } },
+        const stopIds = new Set(found.stops.map((s) => s.id))
+        const hotelRow = await db.query.hotel.findFirst({
+          where: eq(hotel.id, req.params.hotelId),
+          with: { stop: { columns: { city: true } } },
         })
-        if (!hotel || !stopIds.has(hotel.stopId)) {
+        if (!hotelRow || !stopIds.has(hotelRow.stopId)) {
           res.status(404).json({ error: 'Hotel not found' })
           return
         }
 
-        const amount = lodgingAmountFromHotel(hotel)
+        const amount = lodgingAmountFromHotel(hotelRow)
         const nightsLabel =
-          hotel.nights != null ? ` · ${hotel.nights} night${hotel.nights === 1 ? '' : 's'}` : ''
-        const label = `${hotel.name} (${hotel.stop.city})${nightsLabel}`
+          hotelRow.nights != null
+            ? ` · ${hotelRow.nights} night${hotelRow.nights === 1 ? '' : 's'}`
+            : ''
+        const label = `${hotelRow.name} (${hotelRow.stop.city})${nightsLabel}`
 
-        const line = await prisma.budgetLine.create({
-          data: {
-            tripId: trip.id,
+        const [created] = await db
+          .insert(budgetLine)
+          .values({
+            id: randomUUID(),
+            tripId: found.id,
             category: 'lodging',
             label,
             amount,
-          },
-          include: {
+          })
+          .returning()
+
+        const withLink = await db.query.budgetLine.findFirst({
+          where: eq(budgetLine.id, created.id),
+          with: {
             linkedActivity: {
-              select: { id: true, name: true, cost: true, category: true },
+              columns: { id: true, name: true, cost: true, category: true },
             },
           },
         })
 
-        res.status(201).json({ line: serializeBudgetLine(line) })
+        res.status(201).json({ line: serializeBudgetLine(withLink!) })
       } catch (err) {
-        const status = (err as { status?: number }).status
-        if (status === 400) {
+        const statusCode = (err as { status?: number }).status
+        if (statusCode === 400) {
           res.status(400).json({ error: (err as Error).message })
           return
         }

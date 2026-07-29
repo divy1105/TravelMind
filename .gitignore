@@ -4,7 +4,14 @@ dist
 .env.*
 !.env.example
 
-# Prisma artifacts (generated engines / client internals)
-**/node_modules/.prisma
-**/prisma/*.db
+# Better Auth local secret (auto-generated; not a vendor key)
+**/src/api/.auth-secret
+**/.auth-secret
+
+# User uploads (journal photos, etc.)
+uploads/
+**/uploads/
+
+# Netlify
+.netlify
 

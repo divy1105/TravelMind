@@ -1,19 +1,18 @@
-import { type PrismaClient } from '@prisma/client'
+import { sql } from 'drizzle-orm'
 import { Router } from 'express'
+import { db } from '../db'
 
-export function healthRouter(prisma: PrismaClient) {
+export function healthRouter() {
   const router = Router()
 
   router.get('/health', async (_req, res) => {
     try {
-      // Minimal DB ping. This does not rely on domain models.
-      await prisma.$queryRaw`SELECT 1`
+      await db.execute(sql`SELECT 1`)
       res.status(200).json({ ok: true })
-    } catch (err) {
+    } catch {
       res.status(500).json({ ok: false })
     }
   })
 
   return router
 }
-

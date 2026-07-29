@@ -1,7 +1,6 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { isClerkConfigured } from '../lib/clerk'
+import { Map } from 'lucide-react'
 import {
   tripsApi,
   type Activity,
@@ -9,6 +8,8 @@ import {
   type CreateTripPayload,
   type Trip,
 } from '../lib/tripsApi'
+import { EmptyState } from '../components/ui/EmptyState'
+import { Button } from '../components/ui/Button'
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'AUD', 'CAD']
 const INTEREST_OPTIONS = [
@@ -23,9 +24,9 @@ const INTEREST_OPTIONS = [
 ]
 
 const inputClass =
-  'rounded border border-fg/20 bg-bg px-3 py-2 text-fg outline-none focus:border-fg/40'
-const labelClass = 'flex flex-col gap-1'
-const labelText = 'text-sm font-medium text-fg/70'
+  'rounded-md border border-border bg-surface px-3 py-2 text-fg outline-none focus:border-brand focus:ring-2 focus:ring-ring/30'
+const labelClass = 'flex flex-col gap-1.5'
+const labelText = 'text-sm font-medium text-muted-fg'
 
 type StopDraft = {
   key: string
@@ -54,22 +55,6 @@ function toDateInputValue(iso: string) {
 }
 
 export default function PlannerPage() {
-  if (!isClerkConfigured) {
-    return (
-      <div className="mx-auto max-w-2xl py-4">
-        <h1 className="text-2xl font-bold">Planner</h1>
-        <p className="mt-2 text-fg/70">
-          Configure <code className="text-sm">VITE_CLERK_PUBLISHABLE_KEY</code> to create and
-          manage trips.
-        </p>
-      </div>
-    )
-  }
-  return <ClerkPlannerPage />
-}
-
-function ClerkPlannerPage() {
-  const { getToken, isLoaded } = useAuth()
   const [trips, setTrips] = useState<Trip[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -89,20 +74,18 @@ function ClerkPlannerPage() {
   const loadTrips = useCallback(async () => {
     setError('')
     try {
-      const token = await getToken()
-      const { trips: list } = await tripsApi.list(token)
+      const { trips: list } = await tripsApi.list()
       setTrips(list)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load trips')
     } finally {
       setLoading(false)
     }
-  }, [getToken])
+  }, [])
 
   useEffect(() => {
-    if (!isLoaded) return
     loadTrips()
-  }, [isLoaded, loadTrips])
+  }, [loadTrips])
 
   function resetForm() {
     setTitle('')
@@ -144,8 +127,7 @@ function ClerkPlannerPage() {
     }
 
     try {
-      const token = await getToken()
-      const { trip } = await tripsApi.create(token, payload)
+      const { trip } = await tripsApi.create(payload)
       setTrips((prev) => [...prev, trip].sort((a, b) => a.startDate.localeCompare(b.startDate)))
       setExpandedId(trip.id)
       setShowForm(false)
@@ -162,8 +144,7 @@ function ClerkPlannerPage() {
     if (!window.confirm('Delete this trip?')) return
     setError('')
     try {
-      const token = await getToken()
-      await tripsApi.remove(token, id)
+      await tripsApi.remove(id)
       setTrips((prev) => prev.filter((t) => t.id !== id))
       if (expandedId === id) setExpandedId(null)
       setMessage('Trip deleted.')
@@ -176,8 +157,7 @@ function ClerkPlannerPage() {
     if (!city.trim()) return
     setError('')
     try {
-      const token = await getToken()
-      const { stop } = await tripsApi.addStop(token, tripId, {
+      const { stop } = await tripsApi.addStop(tripId, {
         city: city.trim(),
         country: country.trim() || undefined,
       })
@@ -196,8 +176,7 @@ function ClerkPlannerPage() {
   async function handleRemoveStop(tripId: string, stopId: string) {
     setError('')
     try {
-      const token = await getToken()
-      await tripsApi.removeStop(token, tripId, stopId)
+      await tripsApi.removeStop(tripId, stopId)
       setTrips((prev) =>
         prev.map((t) =>
           t.id === tripId ? { ...t, stops: t.stops.filter((s) => s.id !== stopId) } : t,
@@ -220,8 +199,7 @@ function ClerkPlannerPage() {
 
     setError('')
     try {
-      const token = await getToken()
-      const { trip: updated } = await tripsApi.reorderStops(token, trip.id, payload)
+      const { trip: updated } = await tripsApi.reorderStops(trip.id, payload)
       setTrips((prev) => prev.map((t) => (t.id === trip.id ? updated : t)))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reorder stops')
@@ -232,8 +210,7 @@ function ClerkPlannerPage() {
     setError('')
     setMessage('')
     try {
-      const token = await getToken()
-      const { trip: updated, budgetHint } = await tripsApi.generate(token, tripId)
+      const { trip: updated, budgetHint } = await tripsApi.generate(tripId)
       setTrips((prev) => prev.map((t) => (t.id === tripId ? updated : t)))
       const hintParts = budgetHint
         ? [
@@ -262,8 +239,7 @@ function ClerkPlannerPage() {
   ) {
     setError('')
     try {
-      const token = await getToken()
-      const { activity } = await tripsApi.updateActivity(token, tripId, activityId, payload)
+      const { activity } = await tripsApi.updateActivity(tripId, activityId, payload)
       setTrips((prev) =>
         prev.map((t) =>
           t.id !== tripId
@@ -287,8 +263,7 @@ function ClerkPlannerPage() {
   async function handleRemoveActivity(tripId: string, activityId: string) {
     setError('')
     try {
-      const token = await getToken()
-      await tripsApi.removeActivity(token, tripId, activityId)
+      await tripsApi.removeActivity(tripId, activityId)
       setTrips((prev) =>
         prev.map((t) =>
           t.id !== tripId
@@ -307,10 +282,10 @@ function ClerkPlannerPage() {
     }
   }
 
-  if (!isLoaded || loading) {
+  if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-fg" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
       </div>
     )
   }
@@ -319,8 +294,8 @@ function ClerkPlannerPage() {
     <div className="mx-auto max-w-2xl space-y-8 py-4">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Planner</h1>
-          <p className="mt-1 text-sm text-fg/70">
+          <h1 className="font-display text-2xl font-semibold">Planner</h1>
+          <p className="mt-1 text-sm text-muted-fg">
             Create trips, generate AI drafts, then polish the itinerary city by city.
           </p>
         </div>
@@ -331,19 +306,19 @@ function ClerkPlannerPage() {
             setMessage('')
             setError('')
           }}
-          className="shrink-0 rounded bg-fg px-4 py-2 text-sm font-medium text-bg transition hover:opacity-90"
+          className="shrink-0 rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-fg transition hover:opacity-90"
         >
           {showForm ? 'Cancel' : 'New trip'}
         </button>
       </div>
 
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {message && !error && <p className="text-sm text-fg/70">{message}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
+      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
 
       {showForm && (
         <form
           onSubmit={handleCreate}
-          className="flex flex-col gap-4 border border-fg/15 bg-fg/[0.03] p-4"
+          className="flex flex-col gap-4 border border-border bg-muted/50 p-4"
         >
           <h2 className="text-lg font-semibold">Create trip</h2>
 
@@ -422,8 +397,8 @@ function ClerkPlannerPage() {
                     onClick={() => toggleInterest(opt)}
                     className={`rounded border px-3 py-1 text-sm capitalize transition ${
                       active
-                        ? 'border-fg bg-fg text-bg'
-                        : 'border-fg/20 text-fg/80 hover:border-fg/40'
+                        ? 'border-brand bg-brand text-brand-fg'
+                        : 'border-border text-muted-fg hover:border-brand/40'
                     }`}
                   >
                     {opt}
@@ -435,10 +410,10 @@ function ClerkPlannerPage() {
 
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-fg/70">Stops</h3>
+              <h3 className="text-sm font-medium text-muted-fg">Stops</h3>
               <button
                 type="button"
-                className="text-sm text-fg/70 underline-offset-2 hover:underline"
+                className="text-sm text-muted-fg underline-offset-2 hover:underline"
                 onClick={() => setStops((prev) => [...prev, emptyStop(prev.length)])}
               >
                 Add stop
@@ -468,7 +443,7 @@ function ClerkPlannerPage() {
                 />
                 <button
                   type="button"
-                  className="rounded border border-fg/20 px-3 py-2 text-sm text-fg/70 hover:border-fg/40"
+                  className="rounded border border-border px-3 py-2 text-sm text-muted-fg hover:border-brand/40"
                   onClick={() => setStops((prev) => prev.filter((_, i) => i !== idx))}
                   disabled={stops.length <= 1}
                 >
@@ -481,7 +456,7 @@ function ClerkPlannerPage() {
           <button
             type="submit"
             disabled={saving}
-            className="rounded bg-fg px-4 py-2 font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-brand px-4 py-2 font-medium text-brand-fg transition hover:opacity-90 disabled:opacity-50"
           >
             {saving ? 'Creating…' : 'Create trip'}
           </button>
@@ -491,9 +466,25 @@ function ClerkPlannerPage() {
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Your trips</h2>
         {trips.length === 0 ? (
-          <p className="text-fg/70">No trips yet. Create one to get started.</p>
+          <EmptyState
+            icon={<Map className="h-8 w-8" />}
+            title="No trips yet"
+            description="Create your first multi-city trip to generate an AI draft and build the itinerary."
+            action={
+              <Button
+                size="sm"
+                onClick={() => {
+                  setShowForm(true)
+                  setMessage('')
+                  setError('')
+                }}
+              >
+                New trip
+              </Button>
+            }
+          />
         ) : (
-          <ul className="divide-y divide-fg/10 border border-fg/15">
+          <ul className="divide-y divide-border border border-border">
             {trips.map((trip) => {
               const open = expandedId === trip.id
               return (
@@ -505,7 +496,7 @@ function ClerkPlannerPage() {
                       onClick={() => setExpandedId(open ? null : trip.id)}
                     >
                       <div className="font-medium">{trip.title}</div>
-                      <div className="mt-0.5 text-sm text-fg/60">
+                      <div className="mt-0.5 text-sm text-muted-fg">
                         {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
                         {' · '}
                         {trip.totalBudget} {trip.currency}
@@ -518,32 +509,32 @@ function ClerkPlannerPage() {
                     <div className="flex gap-2">
                       <Link
                         to={`/planner/${trip.id}/itinerary`}
-                        className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90"
+                        className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg transition hover:opacity-90"
                       >
                         Itinerary
                       </Link>
                       <Link
                         to={`/planner/${trip.id}/hotels`}
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
                       >
                         Hotels
                       </Link>
                       <Link
                         to={`/planner/${trip.id}/budget`}
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
                       >
                         Budget
                       </Link>
                       <button
                         type="button"
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
                         onClick={() => setExpandedId(open ? null : trip.id)}
                       >
                         {open ? 'Hide' : 'Details'}
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-red-500/50 hover:text-red-600"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-danger/50 hover:text-danger"
                         onClick={() => handleDelete(trip.id)}
                       >
                         Delete
@@ -645,16 +636,16 @@ function TripDetail({
   }
 
   return (
-    <div className="space-y-4 border-t border-fg/10 bg-fg/[0.02] px-4 py-4">
+    <div className="space-y-4 border-t border-border bg-muted/40 px-4 py-4">
       {trip.interests.length > 0 && (
-        <p className="text-sm text-fg/70">
+        <p className="text-sm text-muted-fg">
           Interests:{' '}
           <span className="capitalize text-fg">{trip.interests.join(', ')}</span>
         </p>
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-fg/60">
+        <p className="text-sm text-muted-fg">
           {activityCount > 0
             ? `${activityCount} draft activit${activityCount === 1 ? 'y' : 'ies'}`
             : 'No AI activities yet'}
@@ -662,19 +653,19 @@ function TripDetail({
         <div className="flex flex-wrap gap-2">
           <Link
             to={`/planner/${trip.id}/itinerary`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Open itinerary builder
           </Link>
           <Link
             to={`/planner/${trip.id}/hotels`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Open hotels
           </Link>
           <Link
             to={`/planner/${trip.id}/budget`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Open budget
           </Link>
@@ -682,7 +673,7 @@ function TripDetail({
             type="button"
             disabled={generating || sorted.length === 0}
             onClick={runGenerate}
-            className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
+            className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg transition hover:opacity-90 disabled:opacity-50"
           >
             {generating ? 'Generating…' : 'Generate with AI'}
           </button>
@@ -690,13 +681,13 @@ function TripDetail({
       </div>
 
       {generating && (
-        <p className="text-sm text-fg/60">Asking Gemini for a draft plan…</p>
+        <p className="text-sm text-muted-fg">Asking Gemini for a draft plan…</p>
       )}
 
       {budgetHint && (
-        <div className="text-sm text-fg/70">
+        <div className="text-sm text-muted-fg">
           <span className="font-medium text-fg">Budget hint</span>
-          <ul className="mt-1 list-inside list-disc text-fg/60">
+          <ul className="mt-1 list-inside list-disc text-muted-fg">
             {budgetHint.lodging != null && <li>Lodging: {budgetHint.lodging}</li>}
             {budgetHint.activities != null && <li>Activities: {budgetHint.activities}</li>}
             {budgetHint.food != null && <li>Food: {budgetHint.food}</li>}
@@ -708,24 +699,24 @@ function TripDetail({
       )}
 
       <div>
-        <h3 className="mb-2 text-sm font-medium text-fg/70">Itinerary stops</h3>
+        <h3 className="mb-2 text-sm font-medium text-muted-fg">Itinerary stops</h3>
         {sorted.length === 0 ? (
-          <p className="text-sm text-fg/60">No stops yet. Add a city, then generate.</p>
+          <p className="text-sm text-muted-fg">No stops yet. Add a city, then generate.</p>
         ) : (
           <ol className="space-y-3">
             {sorted.map((stop, idx) => {
               const activities = [...(stop.activities ?? [])].sort((a, b) => a.order - b.order)
               return (
-                <li key={stop.id} className="border border-fg/10 px-3 py-2">
+                <li key={stop.id} className="border border-border px-3 py-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <span className="mr-2 text-xs text-fg/50">{idx + 1}.</span>
+                      <span className="mr-2 text-xs text-muted-fg">{idx + 1}.</span>
                       <span className="font-medium">{stop.city}</span>
                       {stop.country && (
-                        <span className="text-fg/60">, {stop.country}</span>
+                        <span className="text-muted-fg">, {stop.country}</span>
                       )}
                       {(stop.arrivalDate || stop.departureDate) && (
-                        <div className="mt-0.5 text-xs text-fg/50">
+                        <div className="mt-0.5 text-xs text-muted-fg">
                           {stop.arrivalDate && `Arr ${toDateInputValue(stop.arrivalDate)}`}
                           {stop.arrivalDate && stop.departureDate && ' · '}
                           {stop.departureDate && `Dep ${toDateInputValue(stop.departureDate)}`}
@@ -735,7 +726,7 @@ function TripDetail({
                     <div className="flex gap-1">
                       <button
                         type="button"
-                        className="rounded border border-fg/15 px-2 py-1 text-xs disabled:opacity-30"
+                        className="rounded border border-border px-2 py-1 text-xs disabled:opacity-30"
                         disabled={idx === 0}
                         onClick={() => onMoveStop(trip, stop.id, -1)}
                       >
@@ -743,7 +734,7 @@ function TripDetail({
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-fg/15 px-2 py-1 text-xs disabled:opacity-30"
+                        className="rounded border border-border px-2 py-1 text-xs disabled:opacity-30"
                         disabled={idx === sorted.length - 1}
                         onClick={() => onMoveStop(trip, stop.id, 1)}
                       >
@@ -751,7 +742,7 @@ function TripDetail({
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-fg/15 px-2 py-1 text-xs text-fg/70 hover:border-red-500/40"
+                        className="rounded border border-border px-2 py-1 text-xs text-muted-fg hover:border-danger/40"
                         onClick={() => onRemoveStop(trip.id, stop.id)}
                       >
                         Remove
@@ -760,7 +751,7 @@ function TripDetail({
                   </div>
 
                   {activities.length > 0 && (
-                    <ul className="mt-2 space-y-2 border-t border-fg/10 pt-2">
+                    <ul className="mt-2 space-y-2 border-t border-border pt-2">
                       {activities.map((activity) => (
                         <li key={activity.id} className="text-sm">
                           {editingId === activity.id ? (
@@ -779,14 +770,14 @@ function TripDetail({
                               <div className="flex gap-2">
                                 <button
                                   type="button"
-                                  className="rounded bg-fg px-2 py-1 text-xs text-bg"
+                                  className="rounded-md bg-brand px-2 py-1 text-xs text-brand-fg"
                                   onClick={() => saveEdit(activity.id)}
                                 >
                                   Save
                                 </button>
                                 <button
                                   type="button"
-                                  className="rounded border border-fg/20 px-2 py-1 text-xs"
+                                  className="rounded border border-border px-2 py-1 text-xs"
                                   onClick={() => setEditingId(null)}
                                 >
                                   Cancel
@@ -798,7 +789,7 @@ function TripDetail({
                               <div>
                                 <span className="font-medium">{activity.name}</span>
                                 {activity.category && (
-                                  <span className="ml-2 text-xs capitalize text-fg/50">
+                                  <span className="ml-2 text-xs capitalize text-muted-fg">
                                     {activity.category}
                                   </span>
                                 )}
@@ -821,14 +812,14 @@ function TripDetail({
                               <div className="flex gap-1">
                                 <button
                                   type="button"
-                                  className="rounded border border-fg/15 px-2 py-0.5 text-xs"
+                                  className="rounded border border-border px-2 py-0.5 text-xs"
                                   onClick={() => startEdit(activity)}
                                 >
                                   Edit
                                 </button>
                                 <button
                                   type="button"
-                                  className="rounded border border-fg/15 px-2 py-0.5 text-xs text-fg/70 hover:border-red-500/40"
+                                  className="rounded border border-border px-2 py-0.5 text-xs text-muted-fg hover:border-danger/40"
                                   onClick={() => onRemoveActivity(trip.id, activity.id)}
                                 >
                                   Delete
@@ -864,7 +855,7 @@ function TripDetail({
         <button
           type="submit"
           disabled={adding}
-          className="rounded bg-fg px-3 py-2 text-sm font-medium text-bg disabled:opacity-50"
+          className="rounded-md bg-brand px-3 py-2 text-sm font-medium text-brand-fg disabled:opacity-50"
         >
           {adding ? 'Adding…' : 'Add stop'}
         </button>

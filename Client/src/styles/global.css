@@ -11,8 +11,18 @@ body {
 
 body {
   margin: 0;
+  font-family: var(--font-body);
   background: hsl(var(--bg));
   color: hsl(var(--fg));
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
 }
 
 .cinematic-route-overlay {
@@ -22,8 +32,8 @@ body {
   z-index: 50;
   background: radial-gradient(
     circle at center,
-    hsl(199 89% 48% / 0.18),
-    hsl(220 30% 8% / 0.92) 70%
+    hsl(var(--brand) / 0.35),
+    hsl(200 28% 6% / 0.94) 70%
   );
   opacity: 0;
   transform: scale(1.04);
@@ -47,4 +57,3 @@ body {
     transition: none;
   }
 }
-

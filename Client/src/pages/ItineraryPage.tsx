@@ -1,4 +1,3 @@
-import { useAuth } from '@clerk/clerk-react'
 import {
   DndContext,
   KeyboardSensor,
@@ -18,7 +17,6 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { isClerkConfigured } from '../lib/clerk'
 import {
   tripsApi,
   type Activity,
@@ -44,8 +42,8 @@ const CATEGORIES = [
 ]
 
 const inputClass =
-  'rounded border border-fg/20 bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-fg/40'
-const labelText = 'text-xs font-medium text-fg/70'
+  'rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand focus:ring-2 focus:ring-ring/30'
+const labelText = 'text-xs font-medium text-muted-fg'
 
 function formatDate(iso: string) {
   try {
@@ -68,22 +66,7 @@ function sortedActivities(activities: Activity[] | undefined) {
 }
 
 export default function ItineraryPage() {
-  if (!isClerkConfigured) {
-    return (
-      <div className="mx-auto max-w-3xl py-4">
-        <h1 className="text-2xl font-bold">Itinerary builder</h1>
-        <p className="mt-2 text-fg/70">
-          Configure <code className="text-sm">VITE_CLERK_PUBLISHABLE_KEY</code> to edit itineraries.
-        </p>
-      </div>
-    )
-  }
-  return <ClerkItineraryPage />
-}
-
-function ClerkItineraryPage() {
   const { tripId } = useParams<{ tripId: string }>()
-  const { getToken, isLoaded } = useAuth()
   const [trip, setTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -99,8 +82,7 @@ function ClerkItineraryPage() {
     if (!tripId) return
     setError('')
     try {
-      const token = await getToken()
-      const { trip: next } = await tripsApi.get(token, tripId)
+      const { trip: next } = await tripsApi.get(tripId)
       setTrip(next)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load trip')
@@ -108,19 +90,19 @@ function ClerkItineraryPage() {
     } finally {
       setLoading(false)
     }
-  }, [getToken, tripId])
+  }, [tripId])
 
   useEffect(() => {
-    if (!isLoaded || !tripId) return
+    if (!tripId) return
     loadTrip()
-  }, [isLoaded, tripId, loadTrip])
+  }, [tripId, loadTrip])
 
-  async function withToken<T>(fn: (token: string | null) => Promise<T>): Promise<T | null> {
+  async function run<T>(fn: () => Promise<T>): Promise<T | null> {
     setError('')
     setBusy(true)
+    setMessage('')
     try {
-      const token = await getToken()
-      return await fn(token)
+      return await fn()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Request failed')
       return null
@@ -143,9 +125,8 @@ function ClerkItineraryPage() {
     const optimistic: Trip = { ...trip, stops: reordered }
     setTrip(optimistic)
 
-    const result = await withToken((token) =>
+    const result = await run(() =>
       tripsApi.reorderStops(
-        token,
         trip.id,
         reordered.map((s) => ({ id: s.id, order: s.order })),
       ),
@@ -173,9 +154,8 @@ function ClerkItineraryPage() {
       stops: trip.stops.map((s) => (s.id === stopId ? { ...s, activities: reordered } : s)),
     })
 
-    const result = await withToken((token) =>
+    const result = await run(() =>
       tripsApi.reorderActivities(
-        token,
         trip.id,
         stopId,
         reordered.map((a) => ({ id: a.id, order: a.order })),
@@ -193,8 +173,8 @@ function ClerkItineraryPage() {
 
   async function handleAddStop(city: string, country: string) {
     if (!trip || !city.trim()) return
-    const result = await withToken((token) =>
-      tripsApi.addStop(token, trip.id, {
+    const result = await run((token) =>
+      tripsApi.addStop(trip.id, {
         city: city.trim(),
         country: country.trim() || undefined,
       }),
@@ -212,7 +192,7 @@ function ClerkItineraryPage() {
   async function handleRemoveStop(stopId: string) {
     if (!trip) return
     if (!window.confirm('Remove this stop and its activities?')) return
-    const ok = await withToken((token) => tripsApi.removeStop(token, trip.id, stopId))
+    const ok = await run(() => tripsApi.removeStop(trip.id, stopId))
     if (!ok) return
     setTrip({ ...trip, stops: trip.stops.filter((s) => s.id !== stopId) })
     setMessage('Stop removed.')
@@ -220,8 +200,8 @@ function ClerkItineraryPage() {
 
   async function handleAddActivity(stopId: string, payload: CreateActivityPayload) {
     if (!trip) return
-    const result = await withToken((token) =>
-      tripsApi.addActivity(token, trip.id, stopId, payload),
+    const result = await run((token) =>
+      tripsApi.addActivity(trip.id, stopId, payload),
     )
     if (!result) return
     setTrip({
@@ -240,8 +220,8 @@ function ClerkItineraryPage() {
 
   async function handleUpdateActivity(activityId: string, payload: UpdateActivityPayload) {
     if (!trip) return
-    const result = await withToken((token) =>
-      tripsApi.updateActivity(token, trip.id, activityId, payload),
+    const result = await run((token) =>
+      tripsApi.updateActivity(trip.id, activityId, payload),
     )
     if (!result) return
     setTrip({
@@ -257,7 +237,7 @@ function ClerkItineraryPage() {
 
   async function handleRemoveActivity(activityId: string) {
     if (!trip) return
-    const ok = await withToken((token) => tripsApi.removeActivity(token, trip.id, activityId))
+    const ok = await run(() => tripsApi.removeActivity(trip.id, activityId))
     if (!ok) return
     setTrip({
       ...trip,
@@ -269,10 +249,10 @@ function ClerkItineraryPage() {
     setMessage('Activity removed.')
   }
 
-  if (!isLoaded || loading) {
+  if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-fg" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
       </div>
     )
   }
@@ -280,11 +260,11 @@ function ClerkItineraryPage() {
   if (!trip) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 py-4">
-        <Link to="/planner" className="text-sm text-fg/70 underline-offset-2 hover:underline">
+        <Link to="/planner" className="text-sm text-muted-fg underline-offset-2 hover:underline">
           ← Back to planner
         </Link>
-        <h1 className="text-2xl font-bold">Itinerary builder</h1>
-        <p className="text-fg/70">{error || 'Trip not found.'}</p>
+        <h1 className="font-display text-2xl font-semibold">Itinerary builder</h1>
+        <p className="text-muted-fg">{error || 'Trip not found.'}</p>
       </div>
     )
   }
@@ -297,47 +277,47 @@ function ClerkItineraryPage() {
         <div>
           <Link
             to="/planner"
-            className="text-sm text-fg/70 underline-offset-2 hover:underline"
+            className="text-sm text-muted-fg underline-offset-2 hover:underline"
           >
             ← Back to planner
           </Link>
-          <h1 className="mt-2 text-2xl font-bold">{trip.title}</h1>
-          <p className="mt-1 text-sm text-fg/60">
+          <h1 className="mt-2 font-display text-2xl font-semibold">{trip.title}</h1>
+          <p className="mt-1 text-sm text-muted-fg">
             {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
             {' · '}
             {trip.totalBudget} {trip.currency}
             {' · '}
             <span className="capitalize">{trip.status}</span>
           </p>
-          <p className="mt-1 text-sm text-fg/70">
+          <p className="mt-1 text-sm text-muted-fg">
             Drag stops or activities to reorder. Add and edit details city by city.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
             to={`/planner/${trip.id}/hotels`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Hotels
           </Link>
           <Link
             to={`/planner/${trip.id}/budget`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Budget
           </Link>
-          {busy && <span className="self-center text-xs text-fg/50">Saving…</span>}
+          {busy && <span className="self-center text-xs text-muted-fg">Saving…</span>}
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {message && !error && <p className="text-sm text-fg/70">{message}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
+      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onStopDragEnd}>
         <SortableContext items={stops.map((s) => s.id)} strategy={verticalListSortingStrategy}>
           <div className="space-y-4">
             {stops.length === 0 ? (
-              <p className="border border-dashed border-fg/20 px-4 py-8 text-center text-sm text-fg/60">
+              <p className="border border-dashed border-border px-4 py-8 text-center text-sm text-muted-fg">
                 No stops yet. Add a city below to start building.
               </p>
             ) : (
@@ -411,13 +391,13 @@ function SortableStopCard({
     <section
       ref={setNodeRef}
       style={style}
-      className={`border border-fg/15 bg-fg/[0.02] ${isDragging ? 'opacity-70 shadow-lg' : ''}`}
+      className={`border border-border bg-muted/40 ${isDragging ? 'opacity-70 shadow-lg' : ''}`}
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-fg/10 px-3 py-2.5">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
-            className="cursor-grab touch-none rounded border border-fg/15 px-2 py-1 text-xs text-fg/50 active:cursor-grabbing"
+            className="cursor-grab touch-none rounded border border-border px-2 py-1 text-xs text-muted-fg active:cursor-grabbing"
             aria-label={`Drag stop ${stop.city}`}
             {...attributes}
             {...listeners}
@@ -426,13 +406,13 @@ function SortableStopCard({
           </button>
           <div className="min-w-0">
             <h2 className="truncate font-semibold">
-              <span className="mr-1.5 text-xs font-normal text-fg/45">{index + 1}.</span>
+              <span className="mr-1.5 text-xs font-normal text-muted-fg">{index + 1}.</span>
               {stop.city}
               {stop.country ? (
-                <span className="font-normal text-fg/60">, {stop.country}</span>
+                <span className="font-normal text-muted-fg">, {stop.country}</span>
               ) : null}
             </h2>
-            <p className="text-xs text-fg/50">
+            <p className="text-xs text-muted-fg">
               {activities.length} activit{activities.length === 1 ? 'y' : 'ies'}
             </p>
           </div>
@@ -440,7 +420,7 @@ function SortableStopCard({
         <button
           type="button"
           onClick={onRemove}
-          className="rounded border border-fg/15 px-2 py-1 text-xs text-fg/70 hover:border-red-500/40 hover:text-red-600"
+          className="rounded border border-border px-2 py-1 text-xs text-muted-fg hover:border-danger/40 hover:text-danger"
         >
           Remove stop
         </button>
@@ -457,7 +437,7 @@ function SortableStopCard({
             strategy={verticalListSortingStrategy}
           >
             {activities.length === 0 ? (
-              <p className="px-1 py-2 text-sm text-fg/50">No activities yet.</p>
+              <p className="px-1 py-2 text-sm text-muted-fg">No activities yet.</p>
             ) : (
               <ul className="space-y-2">
                 {activities.map((activity) => (
@@ -541,7 +521,7 @@ function SortableActivityRow({
     <li
       ref={setNodeRef}
       style={style}
-      className={`border border-fg/10 bg-bg px-2.5 py-2 ${isDragging ? 'opacity-70 shadow-md' : ''}`}
+      className={`border border-border bg-bg px-2.5 py-2 ${isDragging ? 'opacity-70 shadow-md' : ''}`}
     >
       {editing ? (
         <form onSubmit={saveEdit} className="grid gap-2 sm:grid-cols-2">
@@ -597,13 +577,13 @@ function SortableActivityRow({
             <button
               type="submit"
               disabled={saving}
-              className="rounded bg-fg px-3 py-1.5 text-xs font-medium text-bg disabled:opacity-50"
+              className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg disabled:opacity-50"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
             <button
               type="button"
-              className="rounded border border-fg/20 px-3 py-1.5 text-xs"
+              className="rounded border border-border px-3 py-1.5 text-xs"
               onClick={() => setEditing(false)}
             >
               Cancel
@@ -614,7 +594,7 @@ function SortableActivityRow({
         <div className="flex items-start gap-2">
           <button
             type="button"
-            className="mt-0.5 cursor-grab touch-none rounded border border-fg/15 px-1.5 py-0.5 text-xs text-fg/45 active:cursor-grabbing"
+            className="mt-0.5 cursor-grab touch-none rounded border border-border px-1.5 py-0.5 text-xs text-muted-fg active:cursor-grabbing"
             aria-label={`Drag activity ${activity.name}`}
             {...attributes}
             {...listeners}
@@ -625,7 +605,7 @@ function SortableActivityRow({
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <span className="font-medium">{activity.name}</span>
               {activity.category && (
-                <span className="text-xs capitalize text-fg/50">{activity.category}</span>
+                <span className="text-xs capitalize text-muted-fg">{activity.category}</span>
               )}
             </div>
             <p className="mt-0.5 text-xs text-fg/55">
@@ -643,14 +623,14 @@ function SortableActivityRow({
           <div className="flex shrink-0 gap-1">
             <button
               type="button"
-              className="rounded border border-fg/15 px-2 py-0.5 text-xs"
+              className="rounded border border-border px-2 py-0.5 text-xs"
               onClick={startEdit}
             >
               Edit
             </button>
             <button
               type="button"
-              className="rounded border border-fg/15 px-2 py-0.5 text-xs text-fg/70 hover:border-red-500/40"
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-fg hover:border-danger/40"
               onClick={onRemove}
             >
               Delete
@@ -706,7 +686,7 @@ function AddActivityForm({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="w-full rounded border border-dashed border-fg/20 px-3 py-2 text-sm text-fg/70 hover:border-fg/40 hover:text-fg"
+        className="w-full rounded border border-dashed border-border px-3 py-2 text-sm text-muted-fg hover:border-brand/40 hover:text-fg"
       >
         + Add activity
       </button>
@@ -714,7 +694,7 @@ function AddActivityForm({
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-2 border border-fg/10 bg-bg p-3 sm:grid-cols-2">
+    <form onSubmit={submit} className="grid gap-2 border border-border bg-bg p-3 sm:grid-cols-2">
       <label className="flex flex-col gap-1 sm:col-span-2">
         <span className={labelText}>Name</span>
         <input
@@ -774,13 +754,13 @@ function AddActivityForm({
         <button
           type="submit"
           disabled={saving}
-          className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
+          className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
         >
           {saving ? 'Adding…' : 'Add'}
         </button>
         <button
           type="button"
-          className="rounded border border-fg/20 px-3 py-1.5 text-sm"
+          className="rounded border border-border px-3 py-1.5 text-sm"
           onClick={() => setOpen(false)}
         >
           Cancel
@@ -816,7 +796,7 @@ function AddStopForm({
   return (
     <form
       onSubmit={submit}
-      className="grid gap-2 border border-fg/15 bg-fg/[0.03] p-4 sm:grid-cols-[1fr_1fr_auto]"
+      className="grid gap-2 border border-border bg-muted/50 p-4 sm:grid-cols-[1fr_1fr_auto]"
     >
       <input
         className={inputClass}
@@ -834,7 +814,7 @@ function AddStopForm({
       <button
         type="submit"
         disabled={disabled || saving}
-        className="rounded bg-fg px-4 py-2 text-sm font-medium text-bg disabled:opacity-50"
+        className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-fg disabled:opacity-50"
       >
         {saving ? 'Adding…' : 'Add stop'}
       </button>

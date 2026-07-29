@@ -1,7 +1,5 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { isClerkConfigured } from '../lib/clerk'
 import {
   tripsApi,
   type CreateHotelPayload,
@@ -12,8 +10,8 @@ import {
 } from '../lib/tripsApi'
 
 const inputClass =
-  'rounded border border-fg/20 bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-fg/40'
-const labelText = 'text-xs font-medium text-fg/70'
+  'rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand focus:ring-2 focus:ring-ring/30'
+const labelText = 'text-xs font-medium text-muted-fg'
 
 function formatDate(iso: string) {
   try {
@@ -54,22 +52,7 @@ function sortedStops(stops: Stop[]) {
 }
 
 export default function HotelsPage() {
-  if (!isClerkConfigured) {
-    return (
-      <div className="mx-auto max-w-3xl py-4">
-        <h1 className="text-2xl font-bold">Hotels</h1>
-        <p className="mt-2 text-fg/70">
-          Configure <code className="text-sm">VITE_CLERK_PUBLISHABLE_KEY</code> to manage hotels.
-        </p>
-      </div>
-    )
-  }
-  return <ClerkHotelsPage />
-}
-
-function ClerkHotelsPage() {
   const { tripId } = useParams<{ tripId: string }>()
-  const { getToken, isLoaded } = useAuth()
   const [trip, setTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -81,8 +64,7 @@ function ClerkHotelsPage() {
     setError('')
     setLoading(true)
     try {
-      const token = await getToken()
-      const { trip: data } = await tripsApi.get(token, tripId)
+      const { trip: data } = await tripsApi.get(tripId)
       setTrip(data)
     } catch (err) {
       setTrip(null)
@@ -90,11 +72,11 @@ function ClerkHotelsPage() {
     } finally {
       setLoading(false)
     }
-  }, [getToken, tripId])
+  }, [tripId])
 
   useEffect(() => {
-    if (isLoaded) void loadTrip()
-  }, [isLoaded, loadTrip])
+    void loadTrip()
+  }, [loadTrip])
 
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
@@ -145,8 +127,7 @@ function ClerkHotelsPage() {
   async function handleAdd(stopId: string, payload: CreateHotelPayload) {
     if (!tripId) return
     await withBusy(async () => {
-      const token = await getToken()
-      const { hotel } = await tripsApi.addHotel(token, tripId, stopId, payload)
+      const { hotel } = await tripsApi.addHotel(tripId, stopId, payload)
       upsertHotel(stopId, hotel)
       setMessage(`Added “${hotel.name}”.`)
     })
@@ -155,8 +136,7 @@ function ClerkHotelsPage() {
   async function handleUpdate(hotelId: string, stopId: string, payload: UpdateHotelPayload) {
     if (!tripId) return
     await withBusy(async () => {
-      const token = await getToken()
-      const { hotel } = await tripsApi.updateHotel(token, tripId, hotelId, payload)
+      const { hotel } = await tripsApi.updateHotel(tripId, hotelId, payload)
       upsertHotel(stopId, hotel)
       setMessage('Hotel updated.')
     })
@@ -165,8 +145,7 @@ function ClerkHotelsPage() {
   async function handleRemove(hotelId: string, stopId: string) {
     if (!tripId || !window.confirm('Delete this hotel?')) return
     await withBusy(async () => {
-      const token = await getToken()
-      await tripsApi.removeHotel(token, tripId, hotelId)
+      await tripsApi.removeHotel(tripId, hotelId)
       removeHotelLocal(stopId, hotelId)
       setMessage('Hotel deleted.')
     })
@@ -175,16 +154,15 @@ function ClerkHotelsPage() {
   async function handleAddToBudget(hotel: Hotel) {
     if (!tripId) return
     await withBusy(async () => {
-      const token = await getToken()
-      const { line } = await tripsApi.addHotelToBudget(token, tripId, hotel.id)
+      const { line } = await tripsApi.addHotelToBudget(tripId, hotel.id)
       setMessage(`Added lodging line “${line.label}” (${line.amount}).`)
     })
   }
 
-  if (!isLoaded || loading) {
+  if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-fg" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
       </div>
     )
   }
@@ -192,11 +170,11 @@ function ClerkHotelsPage() {
   if (!trip) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 py-4">
-        <Link to="/planner" className="text-sm text-fg/70 underline-offset-2 hover:underline">
+        <Link to="/planner" className="text-sm text-muted-fg underline-offset-2 hover:underline">
           ← Back to planner
         </Link>
-        <h1 className="text-2xl font-bold">Hotels</h1>
-        <p className="text-fg/70">{error || 'Trip not found.'}</p>
+        <h1 className="font-display text-2xl font-semibold">Hotels</h1>
+        <p className="text-muted-fg">{error || 'Trip not found.'}</p>
       </div>
     )
   }
@@ -209,40 +187,40 @@ function ClerkHotelsPage() {
         <div>
           <Link
             to="/planner"
-            className="text-sm text-fg/70 underline-offset-2 hover:underline"
+            className="text-sm text-muted-fg underline-offset-2 hover:underline"
           >
             ← Back to planner
           </Link>
-          <h1 className="mt-2 text-2xl font-bold">{trip.title}</h1>
-          <p className="mt-1 text-sm text-fg/60">
+          <h1 className="mt-2 font-display text-2xl font-semibold">{trip.title}</h1>
+          <p className="mt-1 text-sm text-muted-fg">
             Hotels · {formatDate(trip.startDate)} – {formatDate(trip.endDate)}
           </p>
-          <p className="mt-1 text-sm text-fg/70">
+          <p className="mt-1 text-sm text-muted-fg">
             Save lodging notes per city. Add priced stays to the trip budget.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
             to={`/planner/${trip.id}/itinerary`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Itinerary
           </Link>
           <Link
             to={`/planner/${trip.id}/budget`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Budget
           </Link>
-          {busy && <span className="self-center text-xs text-fg/50">Saving…</span>}
+          {busy && <span className="self-center text-xs text-muted-fg">Saving…</span>}
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {message && !error && <p className="text-sm text-fg/70">{message}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
+      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
 
       {stops.length === 0 ? (
-        <p className="border border-dashed border-fg/20 px-4 py-8 text-center text-sm text-fg/60">
+        <p className="border border-dashed border-border px-4 py-8 text-center text-sm text-muted-fg">
           No stops yet. Add cities in the planner or itinerary first.
         </p>
       ) : (
@@ -350,26 +328,26 @@ function StopHotelsCard({
   }
 
   return (
-    <section className="border border-fg/15 bg-fg/[0.02]">
-      <header className="border-b border-fg/10 px-3 py-2.5">
-        <span className="mr-2 text-xs text-fg/50">{index + 1}.</span>
+    <section className="border border-border bg-muted/40">
+      <header className="border-b border-border px-3 py-2.5">
+        <span className="mr-2 text-xs text-muted-fg">{index + 1}.</span>
         <span className="font-medium">{stop.city}</span>
-        {stop.country && <span className="text-fg/60">, {stop.country}</span>}
-        <span className="ml-2 text-xs text-fg/50">
+        {stop.country && <span className="text-muted-fg">, {stop.country}</span>}
+        <span className="ml-2 text-xs text-muted-fg">
           {hotels.length} hotel{hotels.length === 1 ? '' : 's'}
         </span>
       </header>
 
       <div className="space-y-3 px-3 py-3">
         {hotels.length === 0 ? (
-          <p className="text-sm text-fg/60">No hotels saved for this stop.</p>
+          <p className="text-sm text-muted-fg">No hotels saved for this stop.</p>
         ) : (
           <ul className="space-y-3">
             {hotels.map((hotel) => {
               const total = lodgingTotal(hotel)
               const isEditing = editingId === hotel.id
               return (
-                <li key={hotel.id} className="border border-fg/10 px-3 py-2">
+                <li key={hotel.id} className="border border-border px-3 py-2">
                   {isEditing ? (
                     <form onSubmit={submitEdit} className="grid gap-2 sm:grid-cols-2">
                       <HotelFields
@@ -381,7 +359,7 @@ function StopHotelsCard({
                         <button
                           type="submit"
                           disabled={disabled || !edit.name.trim()}
-                          className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
+                          className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
                         >
                           Save
                         </button>
@@ -389,7 +367,7 @@ function StopHotelsCard({
                           type="button"
                           disabled={disabled}
                           onClick={() => setEditingId(null)}
-                          className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80"
+                          className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg"
                         >
                           Cancel
                         </button>
@@ -401,9 +379,9 @@ function StopHotelsCard({
                         <div>
                           <div className="font-medium">{hotel.name}</div>
                           {hotel.address && (
-                            <div className="text-sm text-fg/60">{hotel.address}</div>
+                            <div className="text-sm text-muted-fg">{hotel.address}</div>
                           )}
-                          <div className="mt-1 text-xs text-fg/50">
+                          <div className="mt-1 text-xs text-muted-fg">
                             {(hotel.checkIn || hotel.checkOut) && (
                               <span>
                                 {hotel.checkIn && `In ${formatDate(hotel.checkIn)}`}
@@ -421,14 +399,14 @@ function StopHotelsCard({
                             )}
                           </div>
                           {hotel.notes && (
-                            <p className="mt-1 text-sm text-fg/70">{hotel.notes}</p>
+                            <p className="mt-1 text-sm text-muted-fg">{hotel.notes}</p>
                           )}
                           {hotel.bookingUrl && (
                             <a
                               href={hotel.bookingUrl}
                               target="_blank"
                               rel="noreferrer"
-                              className="mt-1 inline-block text-sm text-fg/70 underline-offset-2 hover:underline"
+                              className="mt-1 inline-block text-sm text-muted-fg underline-offset-2 hover:underline"
                             >
                               Booking link
                             </a>
@@ -440,7 +418,7 @@ function StopHotelsCard({
                               type="button"
                               disabled={disabled}
                               onClick={() => onAddToBudget(hotel)}
-                              className="rounded bg-fg px-2.5 py-1 text-xs font-medium text-bg disabled:opacity-50"
+                              className="rounded-md bg-brand px-2.5 py-1 text-xs font-medium text-brand-fg disabled:opacity-50"
                             >
                               Add to budget
                             </button>
@@ -449,7 +427,7 @@ function StopHotelsCard({
                             type="button"
                             disabled={disabled}
                             onClick={() => startEdit(hotel)}
-                            className="rounded border border-fg/20 px-2.5 py-1 text-xs text-fg/80"
+                            className="rounded border border-border px-2.5 py-1 text-xs text-muted-fg"
                           >
                             Edit
                           </button>
@@ -457,7 +435,7 @@ function StopHotelsCard({
                             type="button"
                             disabled={disabled}
                             onClick={() => onRemove(hotel.id)}
-                            className="rounded border border-fg/20 px-2.5 py-1 text-xs text-fg/80 hover:border-red-500/50 hover:text-red-600"
+                            className="rounded border border-border px-2.5 py-1 text-xs text-muted-fg hover:border-danger/50 hover:text-danger"
                           >
                             Delete
                           </button>
@@ -471,14 +449,14 @@ function StopHotelsCard({
           </ul>
         )}
 
-        <form onSubmit={submitAdd} className="grid gap-2 border-t border-fg/10 pt-3 sm:grid-cols-2">
+        <form onSubmit={submitAdd} className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2">
           <p className={`sm:col-span-2 ${labelText}`}>Add hotel</p>
           <HotelFields values={form} onChange={setForm} disabled={disabled} />
           <div className="sm:col-span-2">
             <button
               type="submit"
               disabled={disabled || !form.name.trim()}
-              className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
+              className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
             >
               Add hotel
             </button>

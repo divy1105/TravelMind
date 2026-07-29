@@ -1,10 +1,39 @@
 :root {
-  --bg: 210 20% 98%;
-  --fg: 220 30% 18%;
+  /* Travel-editorial palette — ocean teal, sand, off-white, ink */
+  --brand: 191 74% 17%; /* #0B3D4A */
+  --brand-fg: 40 33% 96%; /* off-white on brand */
+  --accent: 38 51% 81%; /* #E8D5B5 sand */
+  --accent-fg: 191 74% 14%;
+  --bg: 40 25% 97%; /* off-white surfaces */
+  --fg: 200 25% 12%; /* ink */
+  --muted: 35 18% 92%;
+  --muted-fg: 200 12% 40%;
+  --surface: 40 30% 99%;
+  --border: 200 15% 85%;
+  --danger: 0 65% 45%;
+  --danger-fg: 0 0% 100%;
+  --success: 152 45% 32%;
+  --ring: 191 55% 35%;
+  --radius: 0.625rem;
+  --shadow: 200 20% 20%;
+  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-body: 'DM Sans', 'Segoe UI', system-ui, sans-serif;
 }
 
 .dark {
-  --bg: 220 30% 10%;
-  --fg: 210 20% 90%;
+  --brand: 186 42% 55%;
+  --brand-fg: 191 50% 8%;
+  --accent: 38 40% 62%;
+  --accent-fg: 191 50% 8%;
+  --bg: 200 28% 8%;
+  --fg: 40 25% 94%;
+  --muted: 200 20% 14%;
+  --muted-fg: 35 15% 68%;
+  --surface: 200 24% 11%;
+  --border: 200 16% 22%;
+  --danger: 0 70% 58%;
+  --danger-fg: 0 0% 100%;
+  --success: 152 50% 45%;
+  --ring: 186 42% 55%;
+  --shadow: 0 0% 0%;
 }
-

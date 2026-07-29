@@ -203,20 +203,19 @@ export interface TripHotels {
   hotels: Hotel[]
 }
 
-async function apiFetch<T>(
-  path: string,
-  token: string | null,
-  options: RequestInit = {},
-): Promise<T> {
+async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> | undefined),
   }
-  if (token) headers.Authorization = `Bearer ${token}`
   if (options.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json'
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: 'include',
+  })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw new Error((data as { error?: string }).error || `Request failed (${res.status})`)
@@ -225,176 +224,126 @@ async function apiFetch<T>(
 }
 
 export const tripsApi = {
-  list: (token: string | null) =>
-    apiFetch<{ trips: Trip[] }>('/api/trips', token),
+  list: () => apiFetch<{ trips: Trip[] }>('/api/trips'),
 
-  get: (token: string | null, id: string) =>
-    apiFetch<{ trip: Trip }>(`/api/trips/${id}`, token),
+  get: (id: string) => apiFetch<{ trip: Trip }>(`/api/trips/${id}`),
 
-  create: (token: string | null, payload: CreateTripPayload) =>
-    apiFetch<{ trip: Trip }>('/api/trips', token, {
+  create: (payload: CreateTripPayload) =>
+    apiFetch<{ trip: Trip }>('/api/trips', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  update: (token: string | null, id: string, payload: UpdateTripPayload) =>
-    apiFetch<{ trip: Trip }>(`/api/trips/${id}`, token, {
+  update: (id: string, payload: UpdateTripPayload) =>
+    apiFetch<{ trip: Trip }>(`/api/trips/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
 
-  remove: (token: string | null, id: string) =>
-    apiFetch<{ ok: boolean }>(`/api/trips/${id}`, token, { method: 'DELETE' }),
+  remove: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${id}`, { method: 'DELETE' }),
 
-  addStop: (
-    token: string | null,
-    tripId: string,
-    payload: { city: string; country?: string; order?: number },
-  ) =>
-    apiFetch<{ stop: Stop }>(`/api/trips/${tripId}/stops`, token, {
+  addStop: (tripId: string, payload: { city: string; country?: string; order?: number }) =>
+    apiFetch<{ stop: Stop }>(`/api/trips/${tripId}/stops`, {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
   updateStop: (
-    token: string | null,
     tripId: string,
     stopId: string,
     payload: Partial<{ city: string; country: string; order: number }>,
   ) =>
-    apiFetch<{ stop: Stop }>(`/api/trips/${tripId}/stops/${stopId}`, token, {
+    apiFetch<{ stop: Stop }>(`/api/trips/${tripId}/stops/${stopId}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
 
-  removeStop: (token: string | null, tripId: string, stopId: string) =>
-    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/stops/${stopId}`, token, {
+  removeStop: (tripId: string, stopId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/stops/${stopId}`, {
       method: 'DELETE',
     }),
 
-  reorderStops: (
-    token: string | null,
-    tripId: string,
-    stops: Array<{ id: string; order: number }>,
-  ) =>
-    apiFetch<{ trip: Trip }>(`/api/trips/${tripId}/stops/reorder`, token, {
+  reorderStops: (tripId: string, stops: Array<{ id: string; order: number }>) =>
+    apiFetch<{ trip: Trip }>(`/api/trips/${tripId}/stops/reorder`, {
       method: 'PATCH',
       body: JSON.stringify({ stops }),
     }),
 
-  generate: (token: string | null, tripId: string) =>
+  generate: (tripId: string) =>
     apiFetch<{ trip: Trip; budgetHint: BudgetHint | null }>(
       `/api/trips/${tripId}/generate`,
-      token,
       { method: 'POST' },
     ),
 
-  addActivity: (
-    token: string | null,
-    tripId: string,
-    stopId: string,
-    payload: CreateActivityPayload,
-  ) =>
+  addActivity: (tripId: string, stopId: string, payload: CreateActivityPayload) =>
     apiFetch<{ activity: Activity }>(
       `/api/trips/${tripId}/stops/${stopId}/activities`,
-      token,
       { method: 'POST', body: JSON.stringify(payload) },
     ),
 
   reorderActivities: (
-    token: string | null,
     tripId: string,
     stopId: string,
     activities: Array<{ id: string; order: number }>,
   ) =>
     apiFetch<{ trip: Trip }>(
       `/api/trips/${tripId}/stops/${stopId}/activities/reorder`,
-      token,
       { method: 'PATCH', body: JSON.stringify({ activities }) },
     ),
 
-  updateActivity: (
-    token: string | null,
-    tripId: string,
-    activityId: string,
-    payload: UpdateActivityPayload,
-  ) =>
-    apiFetch<{ activity: Activity }>(
-      `/api/trips/${tripId}/activities/${activityId}`,
-      token,
-      { method: 'PATCH', body: JSON.stringify(payload) },
-    ),
-
-  removeActivity: (token: string | null, tripId: string, activityId: string) =>
-    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/activities/${activityId}`, token, {
-      method: 'DELETE',
-    }),
-
-  getBudget: (token: string | null, tripId: string) =>
-    apiFetch<TripBudget>(`/api/trips/${tripId}/budget`, token),
-
-  addBudgetLine: (
-    token: string | null,
-    tripId: string,
-    payload: CreateBudgetLinePayload,
-  ) =>
-    apiFetch<{ line: BudgetLine }>(`/api/trips/${tripId}/budget-lines`, token, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-
-  updateBudgetLine: (
-    token: string | null,
-    tripId: string,
-    lineId: string,
-    payload: UpdateBudgetLinePayload,
-  ) =>
-    apiFetch<{ line: BudgetLine }>(
-      `/api/trips/${tripId}/budget-lines/${lineId}`,
-      token,
-      { method: 'PATCH', body: JSON.stringify(payload) },
-    ),
-
-  removeBudgetLine: (token: string | null, tripId: string, lineId: string) =>
-    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/budget-lines/${lineId}`, token, {
-      method: 'DELETE',
-    }),
-
-  getHotels: (token: string | null, tripId: string) =>
-    apiFetch<TripHotels>(`/api/trips/${tripId}/hotels`, token),
-
-  addHotel: (
-    token: string | null,
-    tripId: string,
-    stopId: string,
-    payload: CreateHotelPayload,
-  ) =>
-    apiFetch<{ hotel: Hotel }>(
-      `/api/trips/${tripId}/stops/${stopId}/hotels`,
-      token,
-      { method: 'POST', body: JSON.stringify(payload) },
-    ),
-
-  updateHotel: (
-    token: string | null,
-    tripId: string,
-    hotelId: string,
-    payload: UpdateHotelPayload,
-  ) =>
-    apiFetch<{ hotel: Hotel }>(`/api/trips/${tripId}/hotels/${hotelId}`, token, {
+  updateActivity: (tripId: string, activityId: string, payload: UpdateActivityPayload) =>
+    apiFetch<{ activity: Activity }>(`/api/trips/${tripId}/activities/${activityId}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
 
-  removeHotel: (token: string | null, tripId: string, hotelId: string) =>
-    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/hotels/${hotelId}`, token, {
+  removeActivity: (tripId: string, activityId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/activities/${activityId}`, {
       method: 'DELETE',
     }),
 
-  addHotelToBudget: (token: string | null, tripId: string, hotelId: string) =>
+  getBudget: (tripId: string) => apiFetch<TripBudget>(`/api/trips/${tripId}/budget`),
+
+  addBudgetLine: (tripId: string, payload: CreateBudgetLinePayload) =>
+    apiFetch<{ line: BudgetLine }>(`/api/trips/${tripId}/budget-lines`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateBudgetLine: (tripId: string, lineId: string, payload: UpdateBudgetLinePayload) =>
+    apiFetch<{ line: BudgetLine }>(`/api/trips/${tripId}/budget-lines/${lineId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  removeBudgetLine: (tripId: string, lineId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/budget-lines/${lineId}`, {
+      method: 'DELETE',
+    }),
+
+  getHotels: (tripId: string) => apiFetch<TripHotels>(`/api/trips/${tripId}/hotels`),
+
+  addHotel: (tripId: string, stopId: string, payload: CreateHotelPayload) =>
+    apiFetch<{ hotel: Hotel }>(`/api/trips/${tripId}/stops/${stopId}/hotels`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateHotel: (tripId: string, hotelId: string, payload: UpdateHotelPayload) =>
+    apiFetch<{ hotel: Hotel }>(`/api/trips/${tripId}/hotels/${hotelId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  removeHotel: (tripId: string, hotelId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/hotels/${hotelId}`, {
+      method: 'DELETE',
+    }),
+
+  addHotelToBudget: (tripId: string, hotelId: string) =>
     apiFetch<{ line: BudgetLine }>(
       `/api/trips/${tripId}/hotels/${hotelId}/add-to-budget`,
-      token,
       { method: 'POST' },
     ),
 }

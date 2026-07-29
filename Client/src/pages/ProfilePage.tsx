@@ -1,5 +1,9 @@
-import { useUser } from '@clerk/clerk-react'
-import { useEffect, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
+import { Save } from 'lucide-react'
+import { Button } from '../components/ui/Button'
+import { Input } from '../components/ui/Input'
+import { Select } from '../components/ui/Select'
+import { Skeleton } from '../components/ui/Skeleton'
 
 const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001'
 
@@ -12,7 +16,6 @@ interface ProfileData {
 }
 
 export default function ProfilePage() {
-  const { user, isLoaded } = useUser()
   const [form, setForm] = useState<ProfileData>({
     name: '',
     bio: '',
@@ -20,17 +23,15 @@ export default function ProfilePage() {
     preferredCurrency: 'USD',
     homeCity: '',
   })
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    if (!isLoaded || !user) return
-
     async function fetchProfile() {
       try {
-        const token = await (window as any).Clerk?.session?.getToken()
         const res = await fetch(`${API}/api/users/me`, {
-          headers: { Authorization: `Bearer ${token}` },
+          credentials: 'include',
         })
         if (res.ok) {
           const { user: u } = await res.json()
@@ -43,24 +44,23 @@ export default function ProfilePage() {
           })
         }
       } catch {
-        // Profile not synced yet
+        // ignore
+      } finally {
+        setLoading(false)
       }
     }
-    fetchProfile()
-  }, [isLoaded, user])
+    void fetchProfile()
+  }, [])
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setSaving(true)
     setMessage('')
     try {
-      const token = await (window as any).Clerk?.session?.getToken()
       const res = await fetch(`${API}/api/users/me`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       })
       if (res.ok) {
@@ -75,39 +75,43 @@ export default function ProfilePage() {
     }
   }
 
-  if (!isLoaded) {
+  if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-fg" />
+      <div className="mx-auto max-w-lg space-y-4 py-8">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-10 w-full" />
       </div>
     )
   }
 
   return (
     <div className="mx-auto max-w-lg py-8">
-      <h1 className="mb-6 text-2xl font-bold">Your Profile</h1>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-fg/70">Name</span>
-          <input
-            className="rounded border border-fg/20 bg-bg px-3 py-2 text-fg"
+      <h1 className="mb-6 font-display text-2xl font-semibold">Your profile</h1>
+      <form
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4 rounded-xl border border-border bg-surface p-6 shadow-soft"
+      >
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-muted-fg">Name</span>
+          <Input
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
         </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-fg/70">Bio</span>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-muted-fg">Bio</span>
           <textarea
-            className="rounded border border-fg/20 bg-bg px-3 py-2 text-fg"
+            className="min-h-[5rem] w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand focus:ring-2 focus:ring-ring/30"
             rows={3}
             value={form.bio}
             onChange={(e) => setForm({ ...form, bio: e.target.value })}
           />
         </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-fg/70">Travel Style</span>
-          <select
-            className="rounded border border-fg/20 bg-bg px-3 py-2 text-fg"
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-muted-fg">Travel style</span>
+          <Select
             value={form.travelStyle}
             onChange={(e) => setForm({ ...form, travelStyle: e.target.value })}
           >
@@ -118,14 +122,15 @@ export default function ProfilePage() {
             <option value="cultural">Cultural</option>
             <option value="relaxation">Relaxation</option>
             <option value="business">Business</option>
-          </select>
+          </Select>
         </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-fg/70">Preferred Currency</span>
-          <select
-            className="rounded border border-fg/20 bg-bg px-3 py-2 text-fg"
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-muted-fg">Preferred currency</span>
+          <Select
             value={form.preferredCurrency}
-            onChange={(e) => setForm({ ...form, preferredCurrency: e.target.value })}
+            onChange={(e) =>
+              setForm({ ...form, preferredCurrency: e.target.value })
+            }
           >
             <option value="USD">USD</option>
             <option value="EUR">EUR</option>
@@ -134,26 +139,20 @@ export default function ProfilePage() {
             <option value="JPY">JPY</option>
             <option value="AUD">AUD</option>
             <option value="CAD">CAD</option>
-          </select>
+          </Select>
         </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-fg/70">Home City</span>
-          <input
-            className="rounded border border-fg/20 bg-bg px-3 py-2 text-fg"
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-muted-fg">Home city</span>
+          <Input
             value={form.homeCity}
             onChange={(e) => setForm({ ...form, homeCity: e.target.value })}
           />
         </label>
-        <button
-          type="submit"
-          disabled={saving}
-          className="rounded bg-fg px-4 py-2 font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
-        >
-          {saving ? 'Saving...' : 'Save Profile'}
-        </button>
-        {message && (
-          <p className="text-sm text-fg/70">{message}</p>
-        )}
+        <Button type="submit" disabled={saving} className="gap-2 self-start">
+          <Save className="h-4 w-4" />
+          {saving ? 'Saving…' : 'Save profile'}
+        </Button>
+        {message && <p className="text-sm text-muted-fg">{message}</p>}
       </form>
     </div>
   )

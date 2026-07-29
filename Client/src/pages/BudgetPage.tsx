@@ -1,7 +1,5 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { isClerkConfigured } from '../lib/clerk'
 import {
   tripsApi,
   type BudgetCategory,
@@ -20,8 +18,8 @@ const CATEGORIES: BudgetCategory[] = [
 ]
 
 const inputClass =
-  'rounded border border-fg/20 bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-fg/40'
-const labelText = 'text-xs font-medium text-fg/70'
+  'rounded-md border border-border bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand focus:ring-2 focus:ring-ring/30'
+const labelText = 'text-xs font-medium text-muted-fg'
 
 function formatMoney(value: string | number, currency: string) {
   const n = Number(value)
@@ -37,22 +35,7 @@ function categoryLabel(category: string) {
 }
 
 export default function BudgetPage() {
-  if (!isClerkConfigured) {
-    return (
-      <div className="mx-auto max-w-3xl py-4">
-        <h1 className="text-2xl font-bold">Budget manager</h1>
-        <p className="mt-2 text-fg/70">
-          Configure <code className="text-sm">VITE_CLERK_PUBLISHABLE_KEY</code> to manage budgets.
-        </p>
-      </div>
-    )
-  }
-  return <ClerkBudgetPage />
-}
-
-function ClerkBudgetPage() {
   const { tripId } = useParams<{ tripId: string }>()
-  const { getToken, isLoaded } = useAuth()
   const [budget, setBudget] = useState<TripBudget | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -75,8 +58,7 @@ function ClerkBudgetPage() {
     setError('')
     setLoading(true)
     try {
-      const token = await getToken()
-      const data = await tripsApi.getBudget(token, tripId)
+      const data = await tripsApi.getBudget(tripId)
       setBudget(data)
     } catch (err) {
       setBudget(null)
@@ -84,11 +66,11 @@ function ClerkBudgetPage() {
     } finally {
       setLoading(false)
     }
-  }, [getToken, tripId])
+  }, [tripId])
 
   useEffect(() => {
-    if (isLoaded) void loadBudget()
-  }, [isLoaded, loadBudget])
+    void loadBudget()
+  }, [loadBudget])
 
   async function withBusy(fn: () => Promise<void>) {
     setBusy(true)
@@ -107,14 +89,13 @@ function ClerkBudgetPage() {
     e.preventDefault()
     if (!tripId || !label.trim() || amount === '') return
     await withBusy(async () => {
-      const token = await getToken()
       const payload: CreateBudgetLinePayload = {
         category,
         label: label.trim(),
         amount: Number(amount),
         linkedActivityId: linkedActivityId || null,
       }
-      await tripsApi.addBudgetLine(token, tripId, payload)
+      await tripsApi.addBudgetLine(tripId, payload)
       setLabel('')
       setAmount('')
       setLinkedActivityId('')
@@ -138,14 +119,13 @@ function ClerkBudgetPage() {
   async function handleUpdate(lineId: string) {
     if (!tripId || !editLabel.trim() || editAmount === '') return
     await withBusy(async () => {
-      const token = await getToken()
       const payload: UpdateBudgetLinePayload = {
         category: editCategory,
         label: editLabel.trim(),
         amount: Number(editAmount),
         linkedActivityId: editLinkedActivityId || null,
       }
-      await tripsApi.updateBudgetLine(token, tripId, lineId, payload)
+      await tripsApi.updateBudgetLine(tripId, lineId, payload)
       setEditingId(null)
       setMessage('Budget line updated.')
       await loadBudget()
@@ -156,8 +136,7 @@ function ClerkBudgetPage() {
     if (!tripId) return
     if (!window.confirm('Delete this budget line?')) return
     await withBusy(async () => {
-      const token = await getToken()
-      await tripsApi.removeBudgetLine(token, tripId, lineId)
+      await tripsApi.removeBudgetLine(tripId, lineId)
       if (editingId === lineId) setEditingId(null)
       setMessage('Budget line deleted.')
       await loadBudget()
@@ -167,8 +146,7 @@ function ClerkBudgetPage() {
   async function addFromActivity(activityId: string, name: string, cost: string) {
     if (!tripId) return
     await withBusy(async () => {
-      const token = await getToken()
-      await tripsApi.addBudgetLine(token, tripId, {
+      await tripsApi.addBudgetLine(tripId, {
         category: 'activities',
         label: name,
         amount: Number(cost),
@@ -179,10 +157,10 @@ function ClerkBudgetPage() {
     })
   }
 
-  if (!isLoaded || loading) {
+  if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/20 border-t-fg" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-brand" />
       </div>
     )
   }
@@ -190,11 +168,11 @@ function ClerkBudgetPage() {
   if (!budget) {
     return (
       <div className="mx-auto max-w-3xl space-y-4 py-4">
-        <Link to="/planner" className="text-sm text-fg/70 underline-offset-2 hover:underline">
+        <Link to="/planner" className="text-sm text-muted-fg underline-offset-2 hover:underline">
           ← Back to planner
         </Link>
-        <h1 className="text-2xl font-bold">Budget manager</h1>
-        <p className="text-fg/70">{error || 'Trip not found.'}</p>
+        <h1 className="font-display text-2xl font-semibold">Budget manager</h1>
+        <p className="text-muted-fg">{error || 'Trip not found.'}</p>
       </div>
     )
   }
@@ -214,40 +192,40 @@ function ClerkBudgetPage() {
         <div>
           <Link
             to="/planner"
-            className="text-sm text-fg/70 underline-offset-2 hover:underline"
+            className="text-sm text-muted-fg underline-offset-2 hover:underline"
           >
             ← Back to planner
           </Link>
-          <h1 className="mt-2 text-2xl font-bold">{budget.title}</h1>
-          <p className="mt-1 text-sm text-fg/60">
+          <h1 className="mt-2 font-display text-2xl font-semibold">{budget.title}</h1>
+          <p className="mt-1 text-sm text-muted-fg">
             Budget · {formatMoney(budget.totalBudget, budget.currency)}
           </p>
-          <p className="mt-1 text-sm text-fg/70">
+          <p className="mt-1 text-sm text-muted-fg">
             Track spending by category and roll up planned activity costs.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
             to={`/planner/${budget.tripId}/itinerary`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Itinerary
           </Link>
           <Link
             to={`/planner/${budget.tripId}/hotels`}
-            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+            className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
           >
             Hotels
           </Link>
-          {busy && <span className="self-center text-xs text-fg/50">Saving…</span>}
+          {busy && <span className="self-center text-xs text-muted-fg">Saving…</span>}
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {message && !error && <p className="text-sm text-fg/70">{message}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
+      {message && !error && <p className="text-sm text-muted-fg">{message}</p>}
 
-      <section className="space-y-3 border border-fg/10 px-4 py-4">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-fg/50">Overview</h2>
+      <section className="space-y-3 border border-border px-4 py-4">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">Overview</h2>
         <div className="grid gap-3 sm:grid-cols-3">
           <div>
             <div className={labelText}>Allocated</div>
@@ -259,7 +237,7 @@ function ClerkBudgetPage() {
             <div className={labelText}>Remaining</div>
             <div
               className={`mt-1 text-lg font-medium ${
-                remainingNum < 0 ? 'text-red-600 dark:text-red-400' : ''
+                remainingNum < 0 ? 'text-danger' : ''
               }`}
             >
               {formatMoney(budget.remaining, budget.currency)}
@@ -275,7 +253,7 @@ function ClerkBudgetPage() {
         <div className="h-2 overflow-hidden rounded bg-fg/10">
           <div
             className={`h-full transition-all ${
-              remainingNum < 0 ? 'bg-red-500/80' : 'bg-fg/60'
+              remainingNum < 0 ? 'bg-danger' : 'bg-fg/60'
             }`}
             style={{ width: `${totalAllocatedPct}%` }}
           />
@@ -283,7 +261,7 @@ function ClerkBudgetPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-fg/50">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
           By category
         </h2>
         <ul className="space-y-2">
@@ -296,8 +274,8 @@ function ClerkBudgetPage() {
             return (
               <li key={cat}>
                 <div className="mb-1 flex justify-between text-sm">
-                  <span className="capitalize text-fg/80">{categoryLabel(cat)}</span>
-                  <span className="text-fg/60">{formatMoney(value, budget.currency)}</span>
+                  <span className="capitalize text-muted-fg">{categoryLabel(cat)}</span>
+                  <span className="text-muted-fg">{formatMoney(value, budget.currency)}</span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded bg-fg/10">
                   <div className="h-full bg-fg/40" style={{ width: `${pct}%` }} />
@@ -309,7 +287,7 @@ function ClerkBudgetPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-fg/50">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
           Add budget line
         </h2>
         <form onSubmit={handleCreate} className="grid gap-3 sm:grid-cols-2">
@@ -372,7 +350,7 @@ function ClerkBudgetPage() {
             <button
               type="submit"
               disabled={busy}
-              className="rounded bg-fg px-4 py-2 text-sm font-medium text-bg transition hover:opacity-90 disabled:opacity-50"
+              className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-fg transition hover:opacity-90 disabled:opacity-50"
             >
               Add line
             </button>
@@ -381,15 +359,15 @@ function ClerkBudgetPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-fg/50">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
           Budget lines
         </h2>
         {budget.lines.length === 0 ? (
-          <p className="border border-dashed border-fg/20 px-4 py-8 text-center text-sm text-fg/60">
+          <p className="border border-dashed border-border px-4 py-8 text-center text-sm text-muted-fg">
             No budget lines yet. Add one above or pull costs from activities.
           </p>
         ) : (
-          <ul className="divide-y divide-fg/10 border border-fg/10">
+          <ul className="divide-y divide-border border border-border">
             {budget.lines.map((line) => (
               <li key={line.id} className="px-4 py-3">
                 {editingId === line.id ? (
@@ -438,14 +416,14 @@ function ClerkBudgetPage() {
                         type="button"
                         disabled={busy}
                         onClick={() => handleUpdate(line.id)}
-                        className="rounded bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
+                        className="rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50"
                       >
                         Save
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingId(null)}
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg"
                       >
                         Cancel
                       </button>
@@ -455,7 +433,7 @@ function ClerkBudgetPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="font-medium">{line.label}</div>
-                      <div className="mt-0.5 text-sm text-fg/60">
+                      <div className="mt-0.5 text-sm text-muted-fg">
                         <span className="capitalize">{line.category}</span>
                         {' · '}
                         {formatMoney(line.amount, budget.currency)}
@@ -470,14 +448,14 @@ function ClerkBudgetPage() {
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40"
                         onClick={() => startEdit(line)}
                       >
                         Edit
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-red-500/50 hover:text-red-600"
+                        className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-danger/50 hover:text-danger"
                         onClick={() => handleDelete(line.id)}
                       >
                         Delete
@@ -492,15 +470,15 @@ function ClerkBudgetPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-fg/50">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-fg">
           Activity costs
         </h2>
         {budget.activityCosts.length === 0 ? (
-          <p className="text-sm text-fg/60">
+          <p className="text-sm text-muted-fg">
             No priced activities yet. Add costs in the itinerary to roll them up here.
           </p>
         ) : (
-          <ul className="divide-y divide-fg/10 border border-fg/10">
+          <ul className="divide-y divide-border border border-border">
             {budget.activityCosts.map((activity) => {
               const alreadyLinked = linkedIds.has(activity.id)
               return (
@@ -510,7 +488,7 @@ function ClerkBudgetPage() {
                 >
                   <div>
                     <div className="font-medium">{activity.name}</div>
-                    <div className="mt-0.5 text-sm text-fg/60">
+                    <div className="mt-0.5 text-sm text-muted-fg">
                       {activity.stopCity}
                       {activity.category ? ` · ${activity.category}` : ''}
                       {' · '}
@@ -518,7 +496,7 @@ function ClerkBudgetPage() {
                     </div>
                   </div>
                   {alreadyLinked ? (
-                    <span className="text-xs text-fg/50">In budget</span>
+                    <span className="text-xs text-muted-fg">In budget</span>
                   ) : (
                     <button
                       type="button"
@@ -526,7 +504,7 @@ function ClerkBudgetPage() {
                       onClick={() =>
                         addFromActivity(activity.id, activity.name, activity.cost)
                       }
-                      className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40 disabled:opacity-50"
+                      className="rounded border border-border px-3 py-1.5 text-sm text-muted-fg hover:border-brand/40 disabled:opacity-50"
                     >
                       Add to budget
                     </button>
