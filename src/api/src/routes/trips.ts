@@ -1,9 +1,16 @@
 import { Router } from 'express'
-import type { PrismaClient, Prisma } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import { requireAuth, getAuth } from '../middleware/auth'
 import { generateTripPlan } from '../services/geminiTripPlanner'
 
 const VALID_STATUSES = new Set(['draft', 'planning', 'active', 'completed'])
+const BUDGET_CATEGORIES = new Set([
+  'lodging',
+  'food',
+  'transport',
+  'activities',
+  'other',
+])
 
 const tripInclude = {
   stops: {
@@ -60,6 +67,84 @@ function serializeActivity(activity: ActivityRow) {
     ...activity,
     cost: activity.cost != null ? activity.cost.toString() : null,
   }
+}
+
+type BudgetLineRow = {
+  id: string
+  tripId: string
+  category: string
+  label: string
+  amount: Prisma.Decimal
+  linkedActivityId: string | null
+  createdAt: Date
+  updatedAt: Date
+  linkedActivity?: {
+    id: string
+    name: string
+    cost: Prisma.Decimal | null
+    category: string | null
+  } | null
+}
+
+function serializeBudgetLine(line: BudgetLineRow) {
+  return {
+    id: line.id,
+    tripId: line.tripId,
+    category: line.category,
+    label: line.label,
+    amount: line.amount.toString(),
+    linkedActivityId: line.linkedActivityId,
+    createdAt: line.createdAt,
+    updatedAt: line.updatedAt,
+    linkedActivity: line.linkedActivity
+      ? {
+          id: line.linkedActivity.id,
+          name: line.linkedActivity.name,
+          cost:
+            line.linkedActivity.cost != null
+              ? line.linkedActivity.cost.toString()
+              : null,
+          category: line.linkedActivity.category,
+        }
+      : null,
+  }
+}
+
+function parseAmount(value: unknown, field = 'amount'): Prisma.Decimal {
+  if (value === undefined || value === null || value === '') {
+    throw Object.assign(new Error(`${field} is required`), { status: 400 })
+  }
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) {
+    throw Object.assign(new Error(`${field} must be a non-negative number`), {
+      status: 400,
+    })
+  }
+  return new Prisma.Decimal(value as string | number)
+}
+
+function decimalToFixed(value: Prisma.Decimal | number): string {
+  return new Prisma.Decimal(value).toFixed(2)
+}
+
+async function assertActivityOnTrip(
+  prisma: PrismaClient,
+  tripId: string,
+  activityId: string,
+) {
+  const activity = await prisma.activity.findFirst({
+    where: {
+      id: activityId,
+      stop: { tripId },
+    },
+  })
+  if (!activity) {
+    throw Object.assign(
+      new Error('linkedActivityId must belong to an activity on this trip'),
+      { status: 400 },
+    )
+  }
+  return activity
 }
 
 function serializeTrip(trip: {
@@ -998,6 +1083,309 @@ export function tripsRouter(prisma: PrismaClient) {
     } catch (err) {
       console.error('[trips/:id/activities/:activityId DELETE]', err)
       res.status(500).json({ error: 'Failed to delete activity' })
+    }
+  })
+
+  // GET /api/trips/:id/budget — lines, category totals, remaining, activity cost rollup
+  router.get('/api/trips/:id/budget', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+        include: {
+          budgetLines: {
+            orderBy: { createdAt: 'asc' },
+            include: {
+              linkedActivity: {
+                select: { id: true, name: true, cost: true, category: true },
+              },
+            },
+          },
+          stops: {
+            orderBy: { order: 'asc' },
+            include: {
+              activities: { orderBy: { order: 'asc' } },
+            },
+          },
+        },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const totalsByCategory: Record<string, string> = {
+        lodging: '0.00',
+        food: '0.00',
+        transport: '0.00',
+        activities: '0.00',
+        other: '0.00',
+      }
+      let allocated = new Prisma.Decimal(0)
+      for (const line of trip.budgetLines) {
+        allocated = allocated.add(line.amount)
+        const key = BUDGET_CATEGORIES.has(line.category) ? line.category : 'other'
+        totalsByCategory[key] = decimalToFixed(
+          new Prisma.Decimal(totalsByCategory[key]).add(line.amount),
+        )
+      }
+
+      const remaining = trip.totalBudget.sub(allocated)
+
+      let plannedFromActivities = new Prisma.Decimal(0)
+      const activityCosts: Array<{
+        id: string
+        stopId: string
+        stopCity: string
+        name: string
+        category: string | null
+        cost: string
+      }> = []
+
+      for (const stop of trip.stops) {
+        for (const activity of stop.activities) {
+          if (activity.cost == null) continue
+          plannedFromActivities = plannedFromActivities.add(activity.cost)
+          activityCosts.push({
+            id: activity.id,
+            stopId: stop.id,
+            stopCity: stop.city,
+            name: activity.name,
+            category: activity.category,
+            cost: activity.cost.toString(),
+          })
+        }
+      }
+
+      res.json({
+        tripId: trip.id,
+        title: trip.title,
+        currency: trip.currency,
+        totalBudget: trip.totalBudget.toString(),
+        allocated: decimalToFixed(allocated),
+        remaining: decimalToFixed(remaining),
+        totalsByCategory,
+        plannedFromActivities: decimalToFixed(plannedFromActivities),
+        lines: trip.budgetLines.map(serializeBudgetLine),
+        activityCosts,
+      })
+    } catch (err) {
+      console.error('[trips/:id/budget GET]', err)
+      res.status(500).json({ error: 'Failed to load budget' })
+    }
+  })
+
+  // POST /api/trips/:id/budget-lines — create budget line
+  router.post('/api/trips/:id/budget-lines', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const { category, label, amount, linkedActivityId } = req.body as {
+        category?: string
+        label?: string
+        amount?: number | string
+        linkedActivityId?: string | null
+      }
+
+      if (!category?.trim() || !BUDGET_CATEGORIES.has(category.trim())) {
+        res.status(400).json({
+          error: 'category must be lodging, food, transport, activities, or other',
+        })
+        return
+      }
+      if (!label?.trim()) {
+        res.status(400).json({ error: 'label is required' })
+        return
+      }
+
+      const parsedAmount = parseAmount(amount)
+      let linkedId: string | null = null
+      if (linkedActivityId) {
+        await assertActivityOnTrip(prisma, trip.id, linkedActivityId)
+        linkedId = linkedActivityId
+      }
+
+      const line = await prisma.budgetLine.create({
+        data: {
+          tripId: trip.id,
+          category: category.trim(),
+          label: label.trim(),
+          amount: parsedAmount,
+          linkedActivityId: linkedId,
+        },
+        include: {
+          linkedActivity: {
+            select: { id: true, name: true, cost: true, category: true },
+          },
+        },
+      })
+
+      res.status(201).json({ line: serializeBudgetLine(line) })
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      if (status === 400) {
+        res.status(400).json({ error: (err as Error).message })
+        return
+      }
+      console.error('[trips/:id/budget-lines POST]', err)
+      res.status(500).json({ error: 'Failed to create budget line' })
+    }
+  })
+
+  // PATCH /api/trips/:id/budget-lines/:lineId — update budget line
+  router.patch('/api/trips/:id/budget-lines/:lineId', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const existing = await prisma.budgetLine.findFirst({
+        where: { id: req.params.lineId, tripId: trip.id },
+      })
+      if (!existing) {
+        res.status(404).json({ error: 'Budget line not found' })
+        return
+      }
+
+      const { category, label, amount, linkedActivityId } = req.body as {
+        category?: string
+        label?: string
+        amount?: number | string
+        linkedActivityId?: string | null
+      }
+
+      const data: Prisma.BudgetLineUpdateInput = {}
+      if (category !== undefined) {
+        if (!category.trim() || !BUDGET_CATEGORIES.has(category.trim())) {
+          res.status(400).json({
+            error: 'category must be lodging, food, transport, activities, or other',
+          })
+          return
+        }
+        data.category = category.trim()
+      }
+      if (label !== undefined) {
+        if (!label.trim()) {
+          res.status(400).json({ error: 'label cannot be empty' })
+          return
+        }
+        data.label = label.trim()
+      }
+      if (amount !== undefined) {
+        data.amount = parseAmount(amount)
+      }
+      if (linkedActivityId !== undefined) {
+        if (linkedActivityId === null || linkedActivityId === '') {
+          data.linkedActivity = { disconnect: true }
+        } else {
+          await assertActivityOnTrip(prisma, trip.id, linkedActivityId)
+          data.linkedActivity = { connect: { id: linkedActivityId } }
+        }
+      }
+
+      const line = await prisma.budgetLine.update({
+        where: { id: existing.id },
+        data,
+        include: {
+          linkedActivity: {
+            select: { id: true, name: true, cost: true, category: true },
+          },
+        },
+      })
+
+      res.json({ line: serializeBudgetLine(line) })
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      if (status === 400) {
+        res.status(400).json({ error: (err as Error).message })
+        return
+      }
+      console.error('[trips/:id/budget-lines/:lineId PATCH]', err)
+      res.status(500).json({ error: 'Failed to update budget line' })
+    }
+  })
+
+  // DELETE /api/trips/:id/budget-lines/:lineId
+  router.delete('/api/trips/:id/budget-lines/:lineId', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const existing = await prisma.budgetLine.findFirst({
+        where: { id: req.params.lineId, tripId: trip.id },
+      })
+      if (!existing) {
+        res.status(404).json({ error: 'Budget line not found' })
+        return
+      }
+
+      await prisma.budgetLine.delete({ where: { id: existing.id } })
+      res.json({ ok: true })
+    } catch (err) {
+      console.error('[trips/:id/budget-lines/:lineId DELETE]', err)
+      res.status(500).json({ error: 'Failed to delete budget line' })
     }
   })
 

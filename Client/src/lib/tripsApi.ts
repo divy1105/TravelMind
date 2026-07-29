@@ -100,6 +100,61 @@ export interface UpdateActivityPayload {
   order?: number
 }
 
+export type BudgetCategory = 'lodging' | 'food' | 'transport' | 'activities' | 'other'
+
+export interface BudgetLine {
+  id: string
+  tripId: string
+  category: BudgetCategory | string
+  label: string
+  amount: string
+  linkedActivityId: string | null
+  createdAt: string
+  updatedAt: string
+  linkedActivity: {
+    id: string
+    name: string
+    cost: string | null
+    category: string | null
+  } | null
+}
+
+export interface BudgetActivityCost {
+  id: string
+  stopId: string
+  stopCity: string
+  name: string
+  category: string | null
+  cost: string
+}
+
+export interface TripBudget {
+  tripId: string
+  title: string
+  currency: string
+  totalBudget: string
+  allocated: string
+  remaining: string
+  totalsByCategory: Record<BudgetCategory | string, string>
+  plannedFromActivities: string
+  lines: BudgetLine[]
+  activityCosts: BudgetActivityCost[]
+}
+
+export interface CreateBudgetLinePayload {
+  category: BudgetCategory | string
+  label: string
+  amount: number | string
+  linkedActivityId?: string | null
+}
+
+export interface UpdateBudgetLinePayload {
+  category?: BudgetCategory | string
+  label?: string
+  amount?: number | string
+  linkedActivityId?: string | null
+}
+
 async function apiFetch<T>(
   path: string,
   token: string | null,
@@ -224,6 +279,36 @@ export const tripsApi = {
 
   removeActivity: (token: string | null, tripId: string, activityId: string) =>
     apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/activities/${activityId}`, token, {
+      method: 'DELETE',
+    }),
+
+  getBudget: (token: string | null, tripId: string) =>
+    apiFetch<TripBudget>(`/api/trips/${tripId}/budget`, token),
+
+  addBudgetLine: (
+    token: string | null,
+    tripId: string,
+    payload: CreateBudgetLinePayload,
+  ) =>
+    apiFetch<{ line: BudgetLine }>(`/api/trips/${tripId}/budget-lines`, token, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateBudgetLine: (
+    token: string | null,
+    tripId: string,
+    lineId: string,
+    payload: UpdateBudgetLinePayload,
+  ) =>
+    apiFetch<{ line: BudgetLine }>(
+      `/api/trips/${tripId}/budget-lines/${lineId}`,
+      token,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+    ),
+
+  removeBudgetLine: (token: string | null, tripId: string, lineId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/budget-lines/${lineId}`, token, {
       method: 'DELETE',
     }),
 }

@@ -522,6 +522,12 @@ function ClerkPlannerPage() {
                       >
                         Itinerary
                       </Link>
+                      <Link
+                        to={`/planner/${trip.id}/budget`}
+                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+                      >
+                        Budget
+                      </Link>
                       <button
                         type="button"
                         className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
@@ -653,6 +659,12 @@ function TripDetail({
             className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
           >
             Open itinerary builder
+          </Link>
+          <Link
+            to={`/planner/${trip.id}/budget`}
+            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+          >
+            Open budget
           </Link>
           <button
             type="button"

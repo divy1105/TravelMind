@@ -313,7 +313,15 @@ function ClerkItineraryPage() {
             Drag stops or activities to reorder. Add and edit details city by city.
           </p>
         </div>
-        {busy && <span className="text-xs text-fg/50">Saving…</span>}
+        <div className="flex flex-wrap gap-2">
+          <Link
+            to={`/planner/${trip.id}/budget`}
+            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+          >
+            Budget
+          </Link>
+          {busy && <span className="self-center text-xs text-fg/50">Saving…</span>}
+        </div>
       </div>
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
