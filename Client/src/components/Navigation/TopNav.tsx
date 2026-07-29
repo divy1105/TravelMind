@@ -1,5 +1,34 @@
 import { Link, NavLink } from 'react-router-dom'
 import { SignedIn, SignedOut, UserButton } from '@clerk/clerk-react'
+import { isClerkConfigured } from '../../lib/clerk'
+
+function ClerkAuthLinks() {
+  return (
+    <>
+      <SignedIn>
+        <NavLink
+          to="/profile"
+          className={({ isActive }) =>
+            isActive ? 'text-fg' : 'text-fg/70 hover:text-fg'
+          }
+        >
+          Profile
+        </NavLink>
+        <UserButton afterSignOutUrl="/" />
+      </SignedIn>
+      <SignedOut>
+        <NavLink
+          to="/sign-in"
+          className={({ isActive }) =>
+            isActive ? 'text-fg' : 'text-fg/70 hover:text-fg'
+          }
+        >
+          Sign In
+        </NavLink>
+      </SignedOut>
+    </>
+  )
+}
 
 export default function TopNav() {
   return (
@@ -26,27 +55,13 @@ export default function TopNav() {
           >
             Planner
           </NavLink>
-          <SignedIn>
-            <NavLink
-              to="/profile"
-              className={({ isActive }) =>
-                isActive ? 'text-fg' : 'text-fg/70 hover:text-fg'
-              }
-            >
-              Profile
-            </NavLink>
-            <UserButton afterSignOutUrl="/" />
-          </SignedIn>
-          <SignedOut>
-            <NavLink
-              to="/sign-in"
-              className={({ isActive }) =>
-                isActive ? 'text-fg' : 'text-fg/70 hover:text-fg'
-              }
-            >
-              Sign In
-            </NavLink>
-          </SignedOut>
+          {isClerkConfigured ? (
+            <ClerkAuthLinks />
+          ) : (
+            <span className="text-fg/40" title="Add VITE_CLERK_PUBLISHABLE_KEY to Client/.env">
+              Auth off
+            </span>
+          )}
         </nav>
       </div>
     </header>

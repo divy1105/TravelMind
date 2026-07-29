@@ -6,12 +6,12 @@ import SignInPage from './pages/SignInPage'
 import SignUpPage from './pages/SignUpPage'
 import ProfilePage from './pages/ProfilePage'
 import ProtectedRoute from './components/Auth/ProtectedRoute'
-import { useAuthSync } from './hooks/useAuthSync'
+import { AuthSync } from './hooks/useAuthSync'
 
 export default function App() {
-  useAuthSync()
-
   return (
+    <>
+      <AuthSync />
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<HomePage />} />
@@ -24,5 +24,6 @@ export default function App() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   )
 }

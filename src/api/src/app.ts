@@ -4,6 +4,7 @@ import { prisma } from './prisma'
 import { healthRouter } from './routes/health'
 import { authRouter } from './routes/auth'
 import { usersRouter } from './routes/users'
+import { tripsRouter } from './routes/trips'
 import { clerkAuth } from './middleware/auth'
 import { errorHandler } from './middleware/errorHandler'
 
@@ -16,6 +17,7 @@ export async function createServer(): Promise<Express> {
   app.use(healthRouter(prisma))
   app.use(authRouter(prisma))
   app.use(usersRouter(prisma))
+  app.use(tripsRouter(prisma))
 
   app.get('/ping', (_req, res) => {
     res.json({ ok: true })

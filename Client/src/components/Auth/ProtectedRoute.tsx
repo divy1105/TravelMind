@@ -1,7 +1,8 @@
 import { useAuth } from '@clerk/clerk-react'
 import { Navigate, Outlet } from 'react-router-dom'
+import { isClerkConfigured } from '../../lib/clerk'
 
-export default function ProtectedRoute() {
+function ClerkProtectedRoute() {
   const { isSignedIn, isLoaded } = useAuth()
 
   if (!isLoaded) {
@@ -17,4 +18,12 @@ export default function ProtectedRoute() {
   }
 
   return <Outlet />
+}
+
+export default function ProtectedRoute() {
+  // Allow local preview of protected pages when Clerk is not configured.
+  if (!isClerkConfigured) {
+    return <Outlet />
+  }
+  return <ClerkProtectedRoute />
 }
