@@ -1,10 +1,11 @@
-import React from 'react'
+import ImmersiveGlobe from './ImmersiveGlobe'
 
-export default function ImmersivePlaceholder() {
-  return (
-    <div className="rounded border border-fg/10 bg-fg/5 p-3 text-fg/70">
-      3D/immersive UI will be added later.
-    </div>
-  )
+type ImmersivePlaceholderProps = {
+  className?: string
 }
 
+export default function ImmersivePlaceholder({
+  className
+}: ImmersivePlaceholderProps) {
+  return <ImmersiveGlobe className={className} />
+}

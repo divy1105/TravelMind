@@ -15,3 +15,36 @@ body {
   color: hsl(var(--fg));
 }
 
+.cinematic-route-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: radial-gradient(
+    circle at center,
+    hsl(199 89% 48% / 0.18),
+    hsl(220 30% 8% / 0.92) 70%
+  );
+  opacity: 0;
+  transform: scale(1.04);
+  transition:
+    opacity 700ms ease,
+    transform 700ms ease;
+}
+
+.cinematic-route-overlay--enter {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.cinematic-route-overlay--exit {
+  opacity: 0;
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cinematic-route-overlay {
+    transition: none;
+  }
+}
+
