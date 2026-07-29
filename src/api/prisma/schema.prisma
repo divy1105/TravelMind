@@ -63,8 +63,27 @@ model Stop {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   activities    Activity[]
+  hotels        Hotel[]
 
   @@index([tripId])
+}
+
+model Hotel {
+  id          String    @id @default(cuid())
+  stopId      String
+  stop        Stop      @relation(fields: [stopId], references: [id], onDelete: Cascade)
+  name        String
+  address     String?
+  checkIn     DateTime?
+  checkOut    DateTime?
+  nightlyRate Decimal?  @db.Decimal(12, 2)
+  nights      Int?
+  notes       String?
+  bookingUrl  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([stopId])
 }
 
 model Activity {

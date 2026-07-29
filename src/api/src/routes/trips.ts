@@ -15,7 +15,10 @@ const BUDGET_CATEGORIES = new Set([
 const tripInclude = {
   stops: {
     orderBy: { order: 'asc' as const },
-    include: { activities: { orderBy: { order: 'asc' as const } } },
+    include: {
+      activities: { orderBy: { order: 'asc' as const } },
+      hotels: { orderBy: { createdAt: 'asc' as const } },
+    },
   },
 }
 
@@ -67,6 +70,63 @@ function serializeActivity(activity: ActivityRow) {
     ...activity,
     cost: activity.cost != null ? activity.cost.toString() : null,
   }
+}
+
+type HotelRow = {
+  id: string
+  stopId: string
+  name: string
+  address: string | null
+  checkIn: Date | null
+  checkOut: Date | null
+  nightlyRate: Prisma.Decimal | null
+  nights: number | null
+  notes: string | null
+  bookingUrl: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+function serializeHotel(hotel: HotelRow) {
+  return {
+    ...hotel,
+    nightlyRate: hotel.nightlyRate != null ? hotel.nightlyRate.toString() : null,
+  }
+}
+
+function parseOptionalAmount(value: unknown, field: string): Prisma.Decimal | null {
+  if (value === undefined || value === null || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) {
+    throw Object.assign(new Error(`${field} must be a non-negative number`), {
+      status: 400,
+    })
+  }
+  return new Prisma.Decimal(value as string | number)
+}
+
+function parseOptionalNights(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
+  const n = Number(value)
+  if (!Number.isInteger(n) || n < 0) {
+    throw Object.assign(new Error('nights must be a non-negative integer'), {
+      status: 400,
+    })
+  }
+  return n
+}
+
+function lodgingAmountFromHotel(hotel: {
+  nightlyRate: Prisma.Decimal | null
+  nights: number | null
+}): Prisma.Decimal {
+  if (hotel.nightlyRate == null) {
+    throw Object.assign(new Error('nightlyRate is required to add lodging to budget'), {
+      status: 400,
+    })
+  }
+  if (hotel.nights == null) return hotel.nightlyRate
+  return hotel.nightlyRate.mul(hotel.nights)
 }
 
 type BudgetLineRow = {
@@ -170,6 +230,7 @@ function serializeTrip(trip: {
     createdAt: Date
     updatedAt: Date
     activities?: ActivityRow[]
+    hotels?: HotelRow[]
   }>
 }) {
   return {
@@ -178,6 +239,7 @@ function serializeTrip(trip: {
     stops: trip.stops?.map((stop) => ({
       ...stop,
       activities: (stop.activities ?? []).map(serializeActivity),
+      hotels: (stop.hotels ?? []).map(serializeHotel),
     })),
   }
 }
@@ -1388,6 +1450,320 @@ export function tripsRouter(prisma: PrismaClient) {
       res.status(500).json({ error: 'Failed to delete budget line' })
     }
   })
+
+  // GET /api/trips/:id/hotels — list hotels for a trip (via stops)
+  router.get('/api/trips/:id/hotels', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+        include: {
+          stops: {
+            orderBy: { order: 'asc' },
+            include: { hotels: { orderBy: { createdAt: 'asc' } } },
+          },
+        },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const hotels = trip.stops.flatMap((stop) =>
+        stop.hotels.map((hotel) => ({
+          ...serializeHotel(hotel),
+          stopCity: stop.city,
+          stopCountry: stop.country,
+          stopOrder: stop.order,
+        })),
+      )
+
+      res.json({
+        tripId: trip.id,
+        title: trip.title,
+        currency: trip.currency,
+        hotels,
+      })
+    } catch (err) {
+      console.error('[trips/:id/hotels GET]', err)
+      res.status(500).json({ error: 'Failed to load hotels' })
+    }
+  })
+
+  // POST /api/trips/:id/stops/:stopId/hotels — add hotel to a stop
+  router.post('/api/trips/:id/stops/:stopId/hotels', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const stop = await prisma.stop.findFirst({
+        where: { id: req.params.stopId, tripId: trip.id },
+      })
+      if (!stop) {
+        res.status(404).json({ error: 'Stop not found' })
+        return
+      }
+
+      const { name, address, checkIn, checkOut, nightlyRate, nights, notes, bookingUrl } =
+        req.body as {
+          name?: string
+          address?: string | null
+          checkIn?: string | null
+          checkOut?: string | null
+          nightlyRate?: number | string | null
+          nights?: number | string | null
+          notes?: string | null
+          bookingUrl?: string | null
+        }
+
+      if (!name?.trim()) {
+        res.status(400).json({ error: 'name is required' })
+        return
+      }
+
+      const hotel = await prisma.hotel.create({
+        data: {
+          stopId: stop.id,
+          name: name.trim(),
+          address: address?.trim() || null,
+          checkIn: parseDate(checkIn, 'checkIn'),
+          checkOut: parseDate(checkOut, 'checkOut'),
+          nightlyRate: parseOptionalAmount(nightlyRate, 'nightlyRate'),
+          nights: parseOptionalNights(nights),
+          notes: notes?.trim() || null,
+          bookingUrl: bookingUrl?.trim() || null,
+        },
+      })
+
+      res.status(201).json({ hotel: serializeHotel(hotel) })
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      if (status === 400) {
+        res.status(400).json({ error: (err as Error).message })
+        return
+      }
+      console.error('[trips/:id/stops/:stopId/hotels POST]', err)
+      res.status(500).json({ error: 'Failed to add hotel' })
+    }
+  })
+
+  // PATCH /api/trips/:id/hotels/:hotelId — edit hotel
+  router.patch('/api/trips/:id/hotels/:hotelId', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+        include: { stops: true },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const stopIds = new Set(trip.stops.map((s) => s.id))
+      const existing = await prisma.hotel.findFirst({
+        where: { id: req.params.hotelId },
+      })
+      if (!existing || !stopIds.has(existing.stopId)) {
+        res.status(404).json({ error: 'Hotel not found' })
+        return
+      }
+
+      const { name, address, checkIn, checkOut, nightlyRate, nights, notes, bookingUrl } =
+        req.body as {
+          name?: string
+          address?: string | null
+          checkIn?: string | null
+          checkOut?: string | null
+          nightlyRate?: number | string | null
+          nights?: number | string | null
+          notes?: string | null
+          bookingUrl?: string | null
+        }
+
+      const data: Prisma.HotelUpdateInput = {}
+      if (name !== undefined) {
+        if (!name.trim()) {
+          res.status(400).json({ error: 'name cannot be empty' })
+          return
+        }
+        data.name = name.trim()
+      }
+      if (address !== undefined) data.address = address?.trim() || null
+      if (checkIn !== undefined) data.checkIn = parseDate(checkIn, 'checkIn')
+      if (checkOut !== undefined) data.checkOut = parseDate(checkOut, 'checkOut')
+      if (nightlyRate !== undefined) {
+        data.nightlyRate = parseOptionalAmount(nightlyRate, 'nightlyRate')
+      }
+      if (nights !== undefined) data.nights = parseOptionalNights(nights)
+      if (notes !== undefined) data.notes = notes?.trim() || null
+      if (bookingUrl !== undefined) data.bookingUrl = bookingUrl?.trim() || null
+
+      const hotel = await prisma.hotel.update({
+        where: { id: existing.id },
+        data,
+      })
+
+      res.json({ hotel: serializeHotel(hotel) })
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      if (status === 400) {
+        res.status(400).json({ error: (err as Error).message })
+        return
+      }
+      console.error('[trips/:id/hotels/:hotelId PATCH]', err)
+      res.status(500).json({ error: 'Failed to update hotel' })
+    }
+  })
+
+  // DELETE /api/trips/:id/hotels/:hotelId
+  router.delete('/api/trips/:id/hotels/:hotelId', requireAuth(), async (req, res) => {
+    try {
+      const { userId: externalId } = getAuth(req)
+      if (!externalId) {
+        res.status(401).json({ error: 'Unauthorized' })
+        return
+      }
+
+      const user = await resolveDbUser(prisma, externalId)
+      if (!user) {
+        res.status(404).json({ error: 'User not found' })
+        return
+      }
+
+      const trip = await prisma.trip.findFirst({
+        where: { id: req.params.id, userId: user.id },
+        include: { stops: true },
+      })
+      if (!trip) {
+        res.status(404).json({ error: 'Trip not found' })
+        return
+      }
+
+      const stopIds = new Set(trip.stops.map((s) => s.id))
+      const existing = await prisma.hotel.findFirst({
+        where: { id: req.params.hotelId },
+      })
+      if (!existing || !stopIds.has(existing.stopId)) {
+        res.status(404).json({ error: 'Hotel not found' })
+        return
+      }
+
+      await prisma.hotel.delete({ where: { id: existing.id } })
+      res.json({ ok: true })
+    } catch (err) {
+      console.error('[trips/:id/hotels/:hotelId DELETE]', err)
+      res.status(500).json({ error: 'Failed to delete hotel' })
+    }
+  })
+
+  // POST /api/trips/:id/hotels/:hotelId/add-to-budget — lodging BudgetLine from rate × nights
+  router.post(
+    '/api/trips/:id/hotels/:hotelId/add-to-budget',
+    requireAuth(),
+    async (req, res) => {
+      try {
+        const { userId: externalId } = getAuth(req)
+        if (!externalId) {
+          res.status(401).json({ error: 'Unauthorized' })
+          return
+        }
+
+        const user = await resolveDbUser(prisma, externalId)
+        if (!user) {
+          res.status(404).json({ error: 'User not found' })
+          return
+        }
+
+        const trip = await prisma.trip.findFirst({
+          where: { id: req.params.id, userId: user.id },
+          include: { stops: true },
+        })
+        if (!trip) {
+          res.status(404).json({ error: 'Trip not found' })
+          return
+        }
+
+        const stopIds = new Set(trip.stops.map((s) => s.id))
+        const hotel = await prisma.hotel.findFirst({
+          where: { id: req.params.hotelId },
+          include: { stop: { select: { city: true } } },
+        })
+        if (!hotel || !stopIds.has(hotel.stopId)) {
+          res.status(404).json({ error: 'Hotel not found' })
+          return
+        }
+
+        const amount = lodgingAmountFromHotel(hotel)
+        const nightsLabel =
+          hotel.nights != null ? ` · ${hotel.nights} night${hotel.nights === 1 ? '' : 's'}` : ''
+        const label = `${hotel.name} (${hotel.stop.city})${nightsLabel}`
+
+        const line = await prisma.budgetLine.create({
+          data: {
+            tripId: trip.id,
+            category: 'lodging',
+            label,
+            amount,
+          },
+          include: {
+            linkedActivity: {
+              select: { id: true, name: true, cost: true, category: true },
+            },
+          },
+        })
+
+        res.status(201).json({ line: serializeBudgetLine(line) })
+      } catch (err) {
+        const status = (err as { status?: number }).status
+        if (status === 400) {
+          res.status(400).json({ error: (err as Error).message })
+          return
+        }
+        console.error('[trips/:id/hotels/:hotelId/add-to-budget POST]', err)
+        res.status(500).json({ error: 'Failed to add hotel to budget' })
+      }
+    },
+  )
 
   return router
 }

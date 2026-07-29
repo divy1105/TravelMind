@@ -16,6 +16,24 @@ export interface Activity {
   updatedAt: string
 }
 
+export interface Hotel {
+  id: string
+  stopId: string
+  name: string
+  address: string | null
+  checkIn: string | null
+  checkOut: string | null
+  nightlyRate: string | null
+  nights: number | null
+  notes: string | null
+  bookingUrl: string | null
+  createdAt: string
+  updatedAt: string
+  stopCity?: string
+  stopCountry?: string | null
+  stopOrder?: number
+}
+
 export interface Stop {
   id: string
   tripId: string
@@ -27,6 +45,7 @@ export interface Stop {
   createdAt: string
   updatedAt: string
   activities?: Activity[]
+  hotels?: Hotel[]
 }
 
 export interface Trip {
@@ -153,6 +172,35 @@ export interface UpdateBudgetLinePayload {
   label?: string
   amount?: number | string
   linkedActivityId?: string | null
+}
+
+export interface CreateHotelPayload {
+  name: string
+  address?: string | null
+  checkIn?: string | null
+  checkOut?: string | null
+  nightlyRate?: number | string | null
+  nights?: number | string | null
+  notes?: string | null
+  bookingUrl?: string | null
+}
+
+export interface UpdateHotelPayload {
+  name?: string
+  address?: string | null
+  checkIn?: string | null
+  checkOut?: string | null
+  nightlyRate?: number | string | null
+  nights?: number | string | null
+  notes?: string | null
+  bookingUrl?: string | null
+}
+
+export interface TripHotels {
+  tripId: string
+  title: string
+  currency: string
+  hotels: Hotel[]
 }
 
 async function apiFetch<T>(
@@ -311,4 +359,42 @@ export const tripsApi = {
     apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/budget-lines/${lineId}`, token, {
       method: 'DELETE',
     }),
+
+  getHotels: (token: string | null, tripId: string) =>
+    apiFetch<TripHotels>(`/api/trips/${tripId}/hotels`, token),
+
+  addHotel: (
+    token: string | null,
+    tripId: string,
+    stopId: string,
+    payload: CreateHotelPayload,
+  ) =>
+    apiFetch<{ hotel: Hotel }>(
+      `/api/trips/${tripId}/stops/${stopId}/hotels`,
+      token,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  updateHotel: (
+    token: string | null,
+    tripId: string,
+    hotelId: string,
+    payload: UpdateHotelPayload,
+  ) =>
+    apiFetch<{ hotel: Hotel }>(`/api/trips/${tripId}/hotels/${hotelId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  removeHotel: (token: string | null, tripId: string, hotelId: string) =>
+    apiFetch<{ ok: boolean }>(`/api/trips/${tripId}/hotels/${hotelId}`, token, {
+      method: 'DELETE',
+    }),
+
+  addHotelToBudget: (token: string | null, tripId: string, hotelId: string) =>
+    apiFetch<{ line: BudgetLine }>(
+      `/api/trips/${tripId}/hotels/${hotelId}/add-to-budget`,
+      token,
+      { method: 'POST' },
+    ),
 }

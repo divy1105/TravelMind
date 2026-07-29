@@ -523,6 +523,12 @@ function ClerkPlannerPage() {
                         Itinerary
                       </Link>
                       <Link
+                        to={`/planner/${trip.id}/hotels`}
+                        className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+                      >
+                        Hotels
+                      </Link>
+                      <Link
                         to={`/planner/${trip.id}/budget`}
                         className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
                       >
@@ -659,6 +665,12 @@ function TripDetail({
             className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
           >
             Open itinerary builder
+          </Link>
+          <Link
+            to={`/planner/${trip.id}/hotels`}
+            className="rounded border border-fg/20 px-3 py-1.5 text-sm text-fg/80 hover:border-fg/40"
+          >
+            Open hotels
           </Link>
           <Link
             to={`/planner/${trip.id}/budget`}

@@ -4,6 +4,7 @@ import HomePage from './pages/HomePage'
 import PlannerPage from './pages/PlannerPage'
 import ItineraryPage from './pages/ItineraryPage'
 import BudgetPage from './pages/BudgetPage'
+import HotelsPage from './pages/HotelsPage'
 import SignInPage from './pages/SignInPage'
 import SignUpPage from './pages/SignUpPage'
 import ProfilePage from './pages/ProfilePage'
@@ -23,6 +24,7 @@ export default function App() {
           <Route path="planner" element={<PlannerPage />} />
           <Route path="planner/:tripId/itinerary" element={<ItineraryPage />} />
           <Route path="planner/:tripId/budget" element={<BudgetPage />} />
+          <Route path="planner/:tripId/hotels" element={<HotelsPage />} />
           <Route path="profile" element={<ProfilePage />} />
         </Route>
       </Route>
